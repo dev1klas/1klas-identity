@@ -14,8 +14,12 @@ services:
     health_check:
       http_path: /healthz
     envs:
+      # Service does not need POSTGRES_URL at build time (the binary is
+      # statically linked and embeds migrations). Keeping this RUN_TIME
+      # narrows the blast radius. The job-level entry below stays
+      # RUN_AND_BUILD_TIME — independent of this one.
       - key: POSTGRES_URL
-        scope: RUN_AND_BUILD_TIME
+        scope: RUN_TIME
         type: SECRET
       - key: COOKIE_DOMAIN
         scope: RUN_TIME

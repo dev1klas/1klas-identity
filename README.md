@@ -81,6 +81,40 @@ end-to-end.
 
 Goose. Files in `migrations/`. Applied automatically at service start.
 
+The standalone `cmd/migrate` binary (built as `bin/migrate` in the Docker
+image) is the same code path, used as a DO App Platform pre-deploy job so
+each deployment applies pending migrations before the server starts.
+
+```bash
+./bin/migrate           # equivalent to up
+./bin/migrate up
+./bin/migrate up-to <ver>
+./bin/migrate status
+./bin/migrate -h        # usage
+```
+
+The binary logs JSON to stderr (slog) and exits non-zero on any failure,
+so the pre-deploy job blocks the release on a migration error. A 5-minute
+deadline is applied to the whole operation; a hung migration tears the
+pre-deploy job down rather than blocking the deployment forever.
+
+## First-time deploy steps
+
+DO App Platform pre-deploy jobs clone from the configured branch (`main`).
+That means on the **very first deploy**, the branch this README lives on
+must already be merged to `main` before `doctl apps create --spec .do/app.yaml`
+is run — otherwise the pre-deploy job will pull a `main` tip that has no
+`bin/migrate` binary in its Dockerfile output, and the deploy will fail.
+
+Order of operations:
+
+1. Merge `feat/identity-deploy-prep` to `main`.
+2. Confirm `main` builds locally: `docker build -t identity:firstdeploy .`.
+3. `doctl apps create --spec .do/app.yaml` — DO will then clone `main`,
+   build the image, run the `migrate` pre-deploy job, and finally start
+   the `identity` service.
+4. For every subsequent deploy, `deploy_on_push: true` handles the rest.
+
 ## Configuration
 
 See `.env.example`. All env vars required at runtime are documented there.
