@@ -50,11 +50,17 @@ func main() {
 	}
 	defer pool.Close()
 
-	migCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
-	defer cancel()
-	if err := postgres.Migrate(migCtx, pool); err != nil {
-		logger.Error("migrations failed", "error", err.Error())
-		os.Exit(1)
+	if cfg.RunMigrationsOnBoot {
+		// Optional convenience for local docker-compose where running a
+		// separate migrate binary is friction. Production applies
+		// migrations via the cmd/migrate pre-deploy job and leaves this
+		// flag false so multiple server instances do not race on boot.
+		migCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+		defer cancel()
+		if err := postgres.Migrate(migCtx, pool); err != nil {
+			logger.Error("migrations failed", "error", err.Error())
+			os.Exit(1)
+		}
 	}
 
 	// Wiring.

@@ -15,7 +15,7 @@ services:
       http_path: /healthz
     envs:
       - key: POSTGRES_URL
-        scope: RUN_TIME
+        scope: RUN_AND_BUILD_TIME
         type: SECRET
       - key: COOKIE_DOMAIN
         scope: RUN_TIME
@@ -35,3 +35,28 @@ services:
       - key: ARGON2_PARALLELISM
         scope: RUN_TIME
         value: "1"
+      - key: ALLOWED_ORIGINS
+        scope: RUN_TIME
+        # Cabinet (1klas-web) and gateway origins. The gateway forwards
+        # the browser Origin header verbatim, so the cabinet origin must
+        # appear here; the api host is permitted for direct curl tests.
+        value: "https://app.1klasdev.com,https://api.1klasdev.com"
+      - key: RUN_MIGRATIONS_ON_BOOT
+        scope: RUN_TIME
+        value: "false"
+jobs:
+  - name: migrate
+    kind: PRE_DEPLOY
+    github:
+      repo: dev1klas/1klas-identity
+      branch: main
+    source_dir: /
+    dockerfile_path: Dockerfile
+    run_command: ./bin/migrate up
+    envs:
+      - key: POSTGRES_URL
+        scope: RUN_AND_BUILD_TIME
+        type: SECRET
+domains:
+  - domain: identity-api.1klasdev.com
+    type: PRIMARY

@@ -25,6 +25,32 @@ func TestLoad_RejectsAllWhitespaceAllowedOrigins(t *testing.T) {
 	}
 }
 
+func TestLoad_RunMigrationsOnBoot_DefaultsFalse(t *testing.T) {
+	t.Setenv("POSTGRES_URL", "postgres://x")
+	t.Setenv("ALLOWED_ORIGINS", "https://app.1klasdev.com")
+	t.Setenv("RUN_MIGRATIONS_ON_BOOT", "")
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.RunMigrationsOnBoot {
+		t.Fatal("RunMigrationsOnBoot must default to false (pre-deploy job applies migrations in prod)")
+	}
+}
+
+func TestLoad_RunMigrationsOnBoot_True(t *testing.T) {
+	t.Setenv("POSTGRES_URL", "postgres://x")
+	t.Setenv("ALLOWED_ORIGINS", "https://app.1klasdev.com")
+	t.Setenv("RUN_MIGRATIONS_ON_BOOT", "true")
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if !cfg.RunMigrationsOnBoot {
+		t.Fatal("RunMigrationsOnBoot must be true when env=true")
+	}
+}
+
 func TestLoad_ParsesAllowedOrigins(t *testing.T) {
 	t.Setenv("POSTGRES_URL", "postgres://x")
 	t.Setenv("ALLOWED_ORIGINS", "http://localhost:5173, https://app.1klasdev.com ")

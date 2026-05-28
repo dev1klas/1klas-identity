@@ -3,6 +3,13 @@
 build:
 	mkdir -p bin
 	go build -ldflags="-s -w" -o bin/server ./cmd/server
+	go build -ldflags="-s -w" -o bin/migrate ./cmd/migrate
+
+migrate-up:
+	go run ./cmd/migrate up
+
+migrate-status:
+	go run ./cmd/migrate status
 
 run:
 	go run ./cmd/server

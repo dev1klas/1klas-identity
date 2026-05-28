@@ -30,20 +30,27 @@ type Config struct {
 	// ALLOWED_ORIGINS (comma-separated). Must contain at least one origin —
 	// Load refuses to start otherwise.
 	AllowedOrigins []string
+	// RunMigrationsOnBoot causes the server binary to apply pending goose
+	// migrations during startup. Defaults to false because production
+	// migrations are applied by the cmd/migrate pre-deploy job; the flag
+	// exists for local docker-compose convenience where running a separate
+	// binary is friction.
+	RunMigrationsOnBoot bool
 }
 
 // Load reads configuration from env. Returns ErrMissingPostgresURL if
 // POSTGRES_URL is unset, or ErrInvalidInt for malformed numeric vars.
 func Load() (Config, error) {
 	cfg := Config{
-		Addr:            envOr("ADDR", defaultAddr),
-		PostgresURL:     os.Getenv("POSTGRES_URL"),
-		CookieDomain:    os.Getenv("COOKIE_DOMAIN"),
-		CookieSecure:    envBool("COOKIE_SECURE", true),
-		SessionTTL:      time.Duration(defaultSessionTTLHrs) * time.Hour,
-		Argon2MemoryKiB: defaultArgon2MemoryKi,
-		Argon2Time:      defaultArgon2Time,
-		Argon2Parallel:  defaultArgon2Para,
+		Addr:                envOr("ADDR", defaultAddr),
+		PostgresURL:         os.Getenv("POSTGRES_URL"),
+		CookieDomain:        os.Getenv("COOKIE_DOMAIN"),
+		CookieSecure:        envBool("COOKIE_SECURE", true),
+		SessionTTL:          time.Duration(defaultSessionTTLHrs) * time.Hour,
+		Argon2MemoryKiB:     defaultArgon2MemoryKi,
+		Argon2Time:          defaultArgon2Time,
+		Argon2Parallel:      defaultArgon2Para,
+		RunMigrationsOnBoot: envBool("RUN_MIGRATIONS_ON_BOOT", false),
 	}
 
 	if cfg.PostgresURL == "" {
