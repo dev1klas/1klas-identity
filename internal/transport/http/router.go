@@ -65,7 +65,7 @@ func NewHandler(d Deps) fasthttp.RequestHandler {
 		d.AccessLog,
 		d.OTel,
 		middleware.RequestID,
-		middleware.Tenancy, // overwritten by Session on success
+		middleware.Tenancy, // injects DefaultID; Session overrides it only on successful auth
 		d.SessionMW,
 		d.Origin,
 	)
@@ -76,7 +76,7 @@ func NewHandler(d Deps) fasthttp.RequestHandler {
 		d.AccessLog,
 		d.OTel,
 		middleware.RequestID,
-		middleware.Tenancy, // overwritten by Session on success
+		middleware.Tenancy, // injects DefaultID; Session overrides it only on successful auth
 		d.SessionMW,
 	)
 
