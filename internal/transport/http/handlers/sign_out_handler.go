@@ -1,11 +1,10 @@
 package handlers
 
 import (
-	"net/http"
+	"github.com/valyala/fasthttp"
 
 	"github.com/dev1klas/1klas-identity/internal/transport/http/cookies"
 	httperr "github.com/dev1klas/1klas-identity/internal/transport/http/errors"
-	"github.com/dev1klas/1klas-identity/internal/transport/http/middleware"
 	"github.com/dev1klas/1klas-identity/internal/usecase/sign_out"
 )
 
@@ -20,16 +19,18 @@ func NewSignOutHandler(uc *sign_out.UseCase, cookie cookies.Config) *SignOutHand
 	return &SignOutHandler{uc: uc, cookie: cookie}
 }
 
-func (h *SignOutHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if _, err := h.uc.Execute(r.Context(), sign_out.Input{
-		TenantID:  middleware.TenantIDFrom(r.Context()),
-		SessionID: middleware.SessionIDFrom(r.Context()),
-		UserID:    middleware.UserIDFrom(r.Context()),
+// Handle is the fasthttp request handler.
+func (h *SignOutHandler) Handle(ctx *fasthttp.RequestCtx) {
+	if _, err := h.uc.Execute(ctx, sign_out.Input{
+		TenantID:     mustTenant(ctx),
+		SessionID:    sessionIDOrNil(ctx),
+		UserID:       userIDOrNil(ctx),
+		TokenHashHex: tokenHashHex(ctx),
 	}); err != nil {
-		httperr.Write(w, httperr.FromSignOut(err))
+		httperr.WriteFast(ctx, httperr.FromSignOut(err))
 		return
 	}
 
-	cookies.Clear(w, h.cookie)
-	w.WriteHeader(http.StatusNoContent)
+	cookies.ClearFast(ctx, h.cookie)
+	ctx.SetStatusCode(fasthttp.StatusNoContent)
 }

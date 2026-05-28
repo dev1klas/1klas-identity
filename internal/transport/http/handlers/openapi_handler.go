@@ -1,13 +1,14 @@
 package handlers
 
 import (
-	"net/http"
+	"github.com/valyala/fasthttp"
 
 	"github.com/dev1klas/1klas-identity/internal/transport/apispec"
 )
 
 // OpenAPI serves the embedded OpenAPI 3.0 spec.
-func OpenAPI(w http.ResponseWriter, _ *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	_, _ = w.Write(apispec.Spec)
+func OpenAPI(ctx *fasthttp.RequestCtx) {
+	ctx.Response.Header.SetContentType("application/json")
+	ctx.SetStatusCode(fasthttp.StatusOK)
+	ctx.SetBody(apispec.Spec)
 }

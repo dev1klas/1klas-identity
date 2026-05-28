@@ -1,12 +1,10 @@
 package handlers
 
-import (
-	"fmt"
-	"net/http"
-)
+import "github.com/valyala/fasthttp"
 
 // Healthz is the liveness probe.
-func Healthz(w http.ResponseWriter, _ *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	_, _ = fmt.Fprint(w, `{"status":"ok"}`)
+func Healthz(ctx *fasthttp.RequestCtx) {
+	ctx.Response.Header.SetContentType("application/json")
+	ctx.SetStatusCode(fasthttp.StatusOK)
+	ctx.SetBodyString(`{"status":"ok"}`)
 }

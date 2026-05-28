@@ -2,8 +2,9 @@ package middleware
 
 import (
 	"log/slog"
-	"net/http"
 	"runtime/debug"
+
+	"github.com/valyala/fasthttp"
 
 	httperr "github.com/dev1klas/1klas-identity/internal/transport/http/errors"
 )
@@ -16,25 +17,26 @@ import (
 // The recovered value is logged but never echoed to the client (panic
 // messages can leak internals).
 func Recover(logger *slog.Logger) Middleware {
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	return func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
+		return func(ctx *fasthttp.RequestCtx) {
 			defer func() {
 				if rec := recover(); rec != nil {
-					// http.ErrAbortHandler is the documented way to abort a
-					// handler without logging — propagate it as-is.
-					if rec == http.ErrAbortHandler {
-						panic(rec)
-					}
-					logger.LogAttrs(r.Context(), slog.LevelError, "panic recovered",
+					// Copy ctx-derived strings into locals before logging:
+					// the recover branch sits inside a deferred fn so we are
+					// still on the synchronous request path, but copying is
+					// the cheap, defensive habit.
+					path := string(ctx.Path())
+					method := string(ctx.Method())
+					logger.LogAttrs(ctx, slog.LevelError, "panic recovered",
 						slog.Any("panic", rec),
-						slog.String("path", r.URL.Path),
-						slog.String("method", r.Method),
+						slog.String("path", path),
+						slog.String("method", method),
 						slog.String("stack", string(debug.Stack())),
 					)
-					httperr.Write(w, httperr.Internal())
+					httperr.WriteFast(ctx, httperr.Internal())
 				}
 			}()
-			next.ServeHTTP(w, r)
-		})
+			next(ctx)
+		}
 	}
 }

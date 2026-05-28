@@ -6,6 +6,8 @@ import (
 	"errors"
 	"net/http"
 
+	"github.com/valyala/fasthttp"
+
 	"github.com/dev1klas/1klas-identity/internal/usecase/get_me"
 	"github.com/dev1klas/1klas-identity/internal/usecase/sign_in"
 	"github.com/dev1klas/1klas-identity/internal/usecase/sign_up"
@@ -101,12 +103,13 @@ func FromGetMe(err error) Response {
 	}
 }
 
-// Write serialises r to w.
-func Write(w http.ResponseWriter, r Response) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(r.Status)
+// WriteFast serialises r to the fasthttp response.
+func WriteFast(ctx *fasthttp.RequestCtx, r Response) {
+	ctx.Response.Header.SetContentType("application/json")
+	ctx.SetStatusCode(r.Status)
 	var body Body
 	body.Error.Code = r.Code
 	body.Error.Message = r.Message
-	_ = json.NewEncoder(w).Encode(body)
+	buf, _ := json.Marshal(body)
+	ctx.SetBody(buf)
 }

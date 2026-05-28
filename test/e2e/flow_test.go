@@ -6,26 +6,30 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
+	"log/slog"
+	"net"
 	"net/http"
-	"net/http/httptest"
-	"net/url"
+	"os"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/alicebob/miniredis/v2"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/testcontainers/testcontainers-go"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 	"github.com/testcontainers/testcontainers-go/wait"
+	"github.com/valyala/fasthttp"
+	"github.com/valyala/fasthttp/fasthttputil"
 
 	"github.com/dev1klas/1klas-identity/internal/domain/clock"
 	"github.com/dev1klas/1klas-identity/internal/infrastructure/argon2id"
 	"github.com/dev1klas/1klas-identity/internal/infrastructure/postgres"
 	"github.com/dev1klas/1klas-identity/internal/infrastructure/tokens"
+	"github.com/dev1klas/1klas-identity/internal/infrastructure/valkey"
 	"github.com/dev1klas/1klas-identity/internal/observability"
-	"log/slog"
-	"os"
 
 	transport "github.com/dev1klas/1klas-identity/internal/transport/http"
 	"github.com/dev1klas/1klas-identity/internal/transport/http/cookies"
@@ -36,7 +40,16 @@ import (
 	"github.com/dev1klas/1klas-identity/internal/usecase/sign_up"
 )
 
-func bringUpServer(t *testing.T) (*httptest.Server, func()) {
+// testServer is a tiny harness wrapping a fasthttp.Server bound to an
+// in-memory listener. The client side talks over the same listener via a
+// fasthttp HostClient.
+type testServer struct {
+	url    string
+	client *fasthttp.Client
+	close  func()
+}
+
+func bringUpServer(t *testing.T) *testServer {
 	t.Helper()
 	ctx := context.Background()
 
@@ -70,82 +83,114 @@ func bringUpServer(t *testing.T) (*httptest.Server, func()) {
 		t.Fatalf("migrate: %v", err)
 	}
 
+	mr, err := miniredis.Run()
+	if err != nil {
+		pool.Close()
+		_ = c.Terminate(ctx)
+		t.Fatalf("miniredis: %v", err)
+	}
+	cache, err := valkey.New(valkey.Config{
+		URL:         "redis://" + mr.Addr(),
+		DialTimeout: 200 * time.Millisecond,
+		OpTimeout:   500 * time.Millisecond,
+	})
+	if err != nil {
+		mr.Close()
+		pool.Close()
+		_ = c.Terminate(ctx)
+		t.Fatalf("valkey: %v", err)
+	}
+
 	observability.InitTracing()
+
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil)).With("service", "identity-test")
 
 	uow := postgres.NewUnitOfWork(pool)
 	userRepo := postgres.NewUserRepository(pool)
 	sessRepo := postgres.NewSessionRepository(pool)
 	outboxRepo := postgres.NewOutboxRepository(pool)
-	// Lighter argon2 for fast test runs.
 	hasher := argon2id.New(argon2id.Params{MemoryKiB: 8 * 1024, Time: 1, Parallelism: 1, SaltLen: 16, KeyLen: 32})
 	tg := tokens.New()
 	clk := clock.Real{}
 
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil)).With("service", "identity-test")
-
-	signUpUC := sign_up.New(uow, userRepo, sessRepo, outboxRepo, hasher, tg, clk, time.Hour)
-	signInUC, err := sign_in.New(ctx, uow, userRepo, sessRepo, outboxRepo, hasher, tg, clk, time.Hour, logger)
+	signUpUC := sign_up.New(uow, userRepo, sessRepo, outboxRepo, cache, hasher, tg, clk, time.Hour, logger)
+	signInUC, err := sign_in.New(ctx, uow, userRepo, sessRepo, outboxRepo, cache, hasher, tg, clk, time.Hour, logger)
 	if err != nil {
+		_ = cache.Close()
+		mr.Close()
+		pool.Close()
+		_ = c.Terminate(ctx)
 		t.Fatalf("sign_in: %v", err)
 	}
-	signOutUC := sign_out.New(uow, sessRepo, outboxRepo, clk)
+	signOutUC := sign_out.New(uow, sessRepo, outboxRepo, cache, clk, logger)
 	getMeUC := get_me.New(userRepo)
 
-	mux := transport.NewMux(transport.Deps{
+	handler := transport.NewHandler(transport.Deps{
 		SignUp:    signUpUC,
 		SignIn:    signInUC,
 		SignOut:   signOutUC,
 		GetMe:     getMeUC,
 		Sessions:  sessRepo,
-		Cookie:    cookies.Config{Secure: false}, // httptest uses HTTP
+		Cache:     cache,
+		Cookie:    cookies.Config{Secure: false}, // local HTTP
 		Recover:   middleware.Recover(logger),
 		AccessLog: middleware.AccessLog(logger),
-		Origin:    middleware.OriginCheck(logger, []string{"http://localhost:5173"}),
+		Origin:    middleware.OriginCheck(logger, []string{testOrigin}),
+		OTel:      middleware.OTelTrace,
+		SessionMW: middleware.Session(sessRepo, cache, logger),
 	})
 
-	srv := httptest.NewServer(mux)
+	ln := fasthttputil.NewInmemoryListener()
+	srv := &fasthttp.Server{Handler: handler}
+	srvErr := make(chan error, 1)
+	go func() { srvErr <- srv.Serve(ln) }()
 
-	return srv, func() {
-		srv.Close()
-		pool.Close()
-		_ = c.Terminate(ctx)
+	client := &fasthttp.Client{
+		Dial: func(_ string) (net.Conn, error) { return ln.Dial() },
+	}
+
+	return &testServer{
+		url:    "http://localhost",
+		client: client,
+		close: func() {
+			_ = ln.Close()
+			<-srvErr
+			_ = cache.Close()
+			mr.Close()
+			pool.Close()
+			_ = c.Terminate(ctx)
+		},
 	}
 }
 
+const testOrigin = "http://localhost:5173"
+
 func TestEndToEndFlow(t *testing.T) {
 	t.Parallel()
-	srv, cleanup := bringUpServer(t)
-	t.Cleanup(cleanup)
+	srv := bringUpServer(t)
+	t.Cleanup(srv.close)
 
-	client := srv.Client()
-	// httptest's default client follows redirects but doesn't keep cookies.
-	jar := &simpleJar{}
-	client.Jar = jar
+	jar := newCookieJar()
 
 	// 1. Sign-up
-	resp, err := postJSON(client, srv.URL+"/api/v1/crm/public/identity/sign-up", `{"email":"alice@example.com","password":"correct horse battery"}`)
-	if err != nil {
-		t.Fatalf("sign-up: %v", err)
-	}
-	if resp.StatusCode != http.StatusCreated {
-		t.Fatalf("sign-up status = %d, body=%s", resp.StatusCode, mustRead(resp))
+	resp, body := srv.do(t, fasthttp.MethodPost, "/api/v1/crm/public/identity/sign-up",
+		`{"email":"alice@example.com","password":"correct horse battery"}`, jar)
+	if resp.StatusCode() != fasthttp.StatusCreated {
+		t.Fatalf("sign-up status = %d, body=%s", resp.StatusCode(), body)
 	}
 	if !jar.has("session") {
-		t.Fatalf("sign-up did not set session cookie; jar=%v", jar.cookies)
+		t.Fatalf("sign-up did not set session cookie; jar=%v", jar.names())
 	}
 
 	// 2. /profile/me
-	resp, err = client.Get(srv.URL + "/api/v1/crm/public/identity/profile/me")
-	if err != nil {
-		t.Fatalf("get me: %v", err)
-	}
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("get me status = %d, body=%s", resp.StatusCode, mustRead(resp))
+	resp, body = srv.do(t, fasthttp.MethodGet, "/api/v1/crm/public/identity/profile/me", "", jar)
+	if resp.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("get me status = %d, body=%s", resp.StatusCode(), body)
 	}
 	var me struct {
 		Email string `json:"email"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&me); err != nil {
+	if err := json.Unmarshal([]byte(body), &me); err != nil {
 		t.Fatalf("decode me: %v", err)
 	}
 	if me.Email != "alice@example.com" {
@@ -153,138 +198,152 @@ func TestEndToEndFlow(t *testing.T) {
 	}
 
 	// 3. Sign-out
-	req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/api/v1/crm/public/identity/sessions/current", nil)
-	req.Header.Set("Origin", testOrigin)
-	for _, c := range jar.cookies {
-		req.AddCookie(c)
+	resp, body = srv.do(t, fasthttp.MethodDelete, "/api/v1/crm/public/identity/sessions/current", "", jar)
+	if resp.StatusCode() != fasthttp.StatusNoContent {
+		t.Fatalf("sign-out status = %d, body=%s", resp.StatusCode(), body)
 	}
-	resp, err = client.Do(req)
-	if err != nil {
-		t.Fatalf("sign-out: %v", err)
-	}
-	if resp.StatusCode != http.StatusNoContent {
-		t.Fatalf("sign-out status = %d, body=%s", resp.StatusCode, mustRead(resp))
-	}
-	// Clear cookies cleared by server response.
-	jar.absorb(resp)
 
 	// 4. /profile/me again — must be 401.
-	resp, err = client.Get(srv.URL + "/api/v1/crm/public/identity/profile/me")
-	if err != nil {
-		t.Fatalf("get me after sign-out: %v", err)
-	}
-	if resp.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("get me after sign-out status = %d (want 401), body=%s", resp.StatusCode, mustRead(resp))
+	resp, body = srv.do(t, fasthttp.MethodGet, "/api/v1/crm/public/identity/profile/me", "", jar)
+	if resp.StatusCode() != fasthttp.StatusUnauthorized {
+		t.Fatalf("get me after sign-out status = %d (want 401), body=%s", resp.StatusCode(), body)
 	}
 
 	// 5. Sign-in again — must work.
-	resp, err = postJSON(client, srv.URL+"/api/v1/crm/public/identity/sessions", `{"email":"alice@example.com","password":"correct horse battery"}`)
-	if err != nil {
-		t.Fatalf("sign-in: %v", err)
-	}
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("sign-in status = %d, body=%s", resp.StatusCode, mustRead(resp))
+	resp, body = srv.do(t, fasthttp.MethodPost, "/api/v1/crm/public/identity/sessions",
+		`{"email":"alice@example.com","password":"correct horse battery"}`, jar)
+	if resp.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("sign-in status = %d, body=%s", resp.StatusCode(), body)
 	}
 
 	// 6. Duplicate sign-up must 409.
-	resp, err = postJSON(client, srv.URL+"/api/v1/crm/public/identity/sign-up", `{"email":"alice@example.com","password":"correct horse battery"}`)
-	if err != nil {
-		t.Fatalf("dup sign-up: %v", err)
-	}
-	if resp.StatusCode != http.StatusConflict {
-		t.Fatalf("dup sign-up status = %d, body=%s", resp.StatusCode, mustRead(resp))
+	resp, body = srv.do(t, fasthttp.MethodPost, "/api/v1/crm/public/identity/sign-up",
+		`{"email":"alice@example.com","password":"correct horse battery"}`, jar)
+	if resp.StatusCode() != fasthttp.StatusConflict {
+		t.Fatalf("dup sign-up status = %d, body=%s", resp.StatusCode(), body)
 	}
 }
 
 func TestHealthzAndOpenAPI(t *testing.T) {
 	t.Parallel()
-	srv, cleanup := bringUpServer(t)
-	t.Cleanup(cleanup)
+	srv := bringUpServer(t)
+	t.Cleanup(srv.close)
 
-	resp, err := srv.Client().Get(srv.URL + "/healthz")
-	if err != nil {
-		t.Fatalf("healthz: %v", err)
+	jar := newCookieJar()
+	resp, body := srv.do(t, fasthttp.MethodGet, "/healthz", "", jar)
+	if resp.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("healthz status = %d", resp.StatusCode())
 	}
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("healthz status = %d", resp.StatusCode)
-	}
+	_ = body
 
-	resp, err = srv.Client().Get(srv.URL + "/openapi.json")
-	if err != nil {
-		t.Fatalf("openapi: %v", err)
+	resp, body = srv.do(t, fasthttp.MethodGet, "/openapi.json", "", jar)
+	if resp.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("openapi status = %d", resp.StatusCode())
 	}
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("openapi status = %d", resp.StatusCode)
-	}
-	body := mustRead(resp)
 	if !strings.Contains(body, "1klas Identity API") {
-		t.Fatalf("openapi body unexpected: %s", body[:200])
+		t.Fatalf("openapi body unexpected: %s", body[:min(200, len(body))])
 	}
 }
 
-const testOrigin = "http://localhost:5173"
-
-func postJSON(c *http.Client, url, body string) (*http.Response, error) {
-	req, err := http.NewRequest(http.MethodPost, url, bytes.NewBufferString(body))
-	if err != nil {
-		return nil, err
+func min(a, b int) int {
+	if a < b {
+		return a
 	}
-	req.Header.Set("Content-Type", "application/json")
+	return b
+}
+
+// do issues a request through the in-memory listener. It writes Origin +
+// Cookie + Content-Type as appropriate.
+func (s *testServer) do(t *testing.T, method, path, body string, jar *cookieJar) (*fasthttp.Response, string) {
+	t.Helper()
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+
+	req.SetRequestURI(s.url + path)
+	req.Header.SetMethod(method)
 	req.Header.Set("Origin", testOrigin)
-	return c.Do(req)
-}
-
-func mustRead(r *http.Response) string {
-	b, _ := io.ReadAll(r.Body)
-	return string(b)
-}
-
-// simpleJar is a deliberately tiny cookie jar — net/http/cookiejar requires a
-// public-suffix list which is overkill for in-process testing.
-type simpleJar struct {
-	cookies []*http.Cookie
-}
-
-func (j *simpleJar) SetCookies(_ *url.URL, cs []*http.Cookie) {
-	for _, c := range cs {
-		j.replace(c)
+	if body != "" {
+		req.Header.SetContentType("application/json")
+		req.SetBodyString(body)
 	}
-}
+	for _, c := range jar.snapshot() {
+		req.Header.SetCookie(c.name, c.value)
+	}
 
-func (j *simpleJar) Cookies(_ *url.URL) []*http.Cookie { return j.activeCookies() }
-
-func (j *simpleJar) replace(c *http.Cookie) {
-	for i, ex := range j.cookies {
-		if ex.Name == c.Name {
-			j.cookies[i] = c
+	if err := s.client.DoTimeout(req, resp, 30*time.Second); err != nil {
+		t.Fatalf("client do: %v", err)
+	}
+	// Absorb Set-Cookie response headers into the jar.
+	resp.Header.VisitAllCookie(func(k, v []byte) {
+		cc := fasthttp.AcquireCookie()
+		defer fasthttp.ReleaseCookie(cc)
+		if err := cc.ParseBytes(v); err != nil {
 			return
 		}
-	}
-	j.cookies = append(j.cookies, c)
+		jar.set(string(cc.Key()), string(cc.Value()), cc.MaxAge())
+		_ = k
+	})
+
+	// Read body into a local string before releasing resp.
+	bodyBuf := bytes.NewBuffer(nil)
+	_, _ = bodyBuf.Write(resp.Body())
+	out := bodyBuf.String()
+	// We return the response object for status; release after caller looks at it.
+	// Use a copy of the status code to avoid keeping resp around past release.
+	statusCopy := resp.StatusCode()
+	fasthttp.ReleaseResponse(resp)
+	// Build a shim response just for status.
+	shim := &fasthttp.Response{}
+	shim.SetStatusCode(statusCopy)
+	return shim, out
 }
 
-func (j *simpleJar) activeCookies() []*http.Cookie {
-	out := make([]*http.Cookie, 0, len(j.cookies))
-	for _, c := range j.cookies {
-		if c.MaxAge < 0 {
-			continue
-		}
-		out = append(out, c)
+// cookieJar is a tiny name->value store with MaxAge tracking. Set-Cookie with
+// MaxAge<0 deletes the entry.
+type cookieJar struct {
+	byName map[string]string
+}
+
+type cookiePair struct {
+	name  string
+	value string
+}
+
+func newCookieJar() *cookieJar { return &cookieJar{byName: map[string]string{}} }
+
+func (j *cookieJar) set(name, value string, maxAge int) {
+	if maxAge < 0 || value == "" {
+		delete(j.byName, name)
+		return
+	}
+	j.byName[name] = value
+}
+
+func (j *cookieJar) snapshot() []cookiePair {
+	out := make([]cookiePair, 0, len(j.byName))
+	for k, v := range j.byName {
+		out = append(out, cookiePair{name: k, value: v})
 	}
 	return out
 }
 
-func (j *simpleJar) has(name string) bool {
-	for _, c := range j.activeCookies() {
-		if c.Name == name {
-			return true
-		}
-	}
-	return false
+func (j *cookieJar) has(name string) bool {
+	_, ok := j.byName[name]
+	return ok
 }
 
-func (j *simpleJar) absorb(r *http.Response) {
-	for _, c := range r.Cookies() {
-		j.replace(c)
+func (j *cookieJar) names() []string {
+	out := make([]string, 0, len(j.byName))
+	for k := range j.byName {
+		out = append(out, k)
 	}
+	return out
 }
+
+// Silence unused imports in some build matrices.
+var (
+	_ = io.Discard
+	_ = http.MethodGet
+	_ = errors.New
+)

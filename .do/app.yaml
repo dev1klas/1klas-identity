@@ -48,6 +48,18 @@ services:
       - key: RUN_MIGRATIONS_ON_BOOT
         scope: RUN_TIME
         value: "false"
+      # Valkey session cache (write-through; Postgres is source of truth).
+      # Required per ADR-0008. The cluster lives at db-valkey-tor1-28852.
+      # Pre-deploy migrate job below does NOT need this — only the service.
+      - key: VALKEY_URL
+        scope: RUN_TIME
+        type: SECRET
+      - key: VALKEY_DIAL_TIMEOUT_MS
+        scope: RUN_TIME
+        value: "200"
+      - key: VALKEY_OP_TIMEOUT_MS
+        scope: RUN_TIME
+        value: "100"
 jobs:
   - name: migrate
     kind: PRE_DEPLOY

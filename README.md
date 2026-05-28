@@ -13,15 +13,16 @@ Identity & Access bounded context for 1klas. Walking skeleton.
 
 ## Stack
 
-Go 1.22 / net/http / pgx/v5 / squirrel / goose / argon2id / slog / OTel SDK
+Go 1.22 / **valyala/fasthttp** / pgx/v5 / squirrel / goose / argon2id /
+**Valkey (Redis-compatible) write-through session cache** / slog / OTel SDK
 (no-op exporter) / testcontainers-go.
+
+Transport on fasthttp and session caching on Valkey are mandated by
+[ADR-0008](../docs/adr/0008-reaffirm-cto-stack-fasthttp-valkey.md).
+ADR-0006 (which deferred both) is superseded.
 
 ## Architectural deviations vs CTO mandate (documented per SPEC §"deviations")
 
-- **net/http instead of fasthttp.** Follows the canonical sibling `1klas-gateway`
-  which has shipped on net/http. Stack pivot ADR favours fasthttp; this is a
-  conscious carry-over from gateway. To be reconciled in a follow-up ADR.
-- **No Redis session cache** — Postgres-only lookup at skeleton.
 - **No CSRF token** — SameSite=Lax + `__Host-` prefix stand in.
 - **No Kafka outbox drainer** — rows accumulate in `identity.outbox_events`.
 - **No SumSub applicant create on signup.** User immediately `active`.
@@ -33,7 +34,7 @@ Go 1.22 / net/http / pgx/v5 / squirrel / goose / argon2id / slog / OTel SDK
 
 ```bash
 cp .env.example .env
-docker compose up -d postgres
+docker compose up -d postgres valkey
 make build
 make run
 ```

@@ -228,5 +228,84 @@ func (r *FakeOutbox) WriteTx(_ context.Context, _ user.Tx, ev outbox.Event) erro
 	return nil
 }
 
+// FakeCache is an in-memory session.Cache. TTL is recorded for assertions
+// but does NOT cause expiry — tests that need expiry must manipulate
+// ExpiredKeys directly or use miniredis.
+type FakeCache struct {
+	mu        sync.Mutex
+	entries   map[string]string
+	TTLs      map[string]time.Duration
+	SetCalls  int
+	GetCalls  int
+	DelCalls  int
+	FailSet   bool
+	FailGet   bool
+	FailDel   bool
+	ForceMiss bool
+}
+
+// NewFakeCache constructs a FakeCache.
+func NewFakeCache() *FakeCache {
+	return &FakeCache{
+		entries: map[string]string{},
+		TTLs:    map[string]time.Duration{},
+	}
+}
+
+// Set records the pair.
+func (c *FakeCache) Set(_ context.Context, tokenHash, sessionID string, ttl time.Duration) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.SetCalls++
+	if c.FailSet {
+		return errors.New("fake cache set failure")
+	}
+	c.entries[tokenHash] = sessionID
+	c.TTLs[tokenHash] = ttl
+	return nil
+}
+
+// Get returns the recorded session id or session.ErrCacheMiss.
+func (c *FakeCache) Get(_ context.Context, tokenHash string) (string, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.GetCalls++
+	if c.FailGet {
+		return "", errors.New("fake cache get failure")
+	}
+	if c.ForceMiss {
+		return "", session.ErrCacheMiss
+	}
+	v, ok := c.entries[tokenHash]
+	if !ok {
+		return "", session.ErrCacheMiss
+	}
+	return v, nil
+}
+
+// Delete removes the pair.
+func (c *FakeCache) Delete(_ context.Context, tokenHash string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.DelCalls++
+	if c.FailDel {
+		return errors.New("fake cache delete failure")
+	}
+	delete(c.entries, tokenHash)
+	delete(c.TTLs, tokenHash)
+	return nil
+}
+
+// Has reports whether the cache currently has an entry for tokenHash.
+func (c *FakeCache) Has(tokenHash string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	_, ok := c.entries[tokenHash]
+	return ok
+}
+
+// Compile-time guard.
+var _ session.Cache = (*FakeCache)(nil)
+
 // ErrUnused silences unused-import warnings on shared error references.
 var ErrUnused = errors.New("unused")

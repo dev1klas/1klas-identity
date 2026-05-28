@@ -2,8 +2,9 @@ package middleware
 
 import (
 	"log/slog"
-	"net/http"
 	"net/url"
+
+	"github.com/valyala/fasthttp"
 
 	httperr "github.com/dev1klas/1klas-identity/internal/transport/http/errors"
 )
@@ -30,59 +31,62 @@ func OriginCheck(logger *slog.Logger, allowed []string) Middleware {
 		}
 	}
 
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	return func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
+		return func(ctx *fasthttp.RequestCtx) {
+			// Copy ctx-bytes off the pooled buffer immediately.
+			path := string(ctx.Path())
+
 			if len(set) == 0 {
-				logger.WarnContext(r.Context(), "origin check rejected: empty allow-list",
-					slog.String("path", r.URL.Path),
+				logger.WarnContext(ctx, "origin check rejected: empty allow-list",
+					slog.String("path", path),
 				)
-				httperr.Write(w, httperr.Forbidden())
+				httperr.WriteFast(ctx, httperr.Forbidden())
 				return
 			}
 
-			origin := r.Header.Get("Origin")
+			origin := string(ctx.Request.Header.Peek("Origin"))
 			if origin != "" {
 				if _, ok := set[origin]; !ok {
-					logger.WarnContext(r.Context(), "origin check rejected",
+					logger.WarnContext(ctx, "origin check rejected",
 						slog.String("origin", origin),
-						slog.String("path", r.URL.Path),
+						slog.String("path", path),
 					)
-					httperr.Write(w, httperr.Forbidden())
+					httperr.WriteFast(ctx, httperr.Forbidden())
 					return
 				}
-				next.ServeHTTP(w, r)
+				next(ctx)
 				return
 			}
 
-			referer := r.Header.Get("Referer")
+			referer := string(ctx.Request.Header.Peek("Referer"))
 			if referer == "" {
-				logger.WarnContext(r.Context(), "origin check rejected: missing Origin and Referer",
-					slog.String("path", r.URL.Path),
+				logger.WarnContext(ctx, "origin check rejected: missing Origin and Referer",
+					slog.String("path", path),
 				)
-				httperr.Write(w, httperr.Forbidden())
+				httperr.WriteFast(ctx, httperr.Forbidden())
 				return
 			}
 
 			refOrigin, ok := originFromReferer(referer)
 			if !ok {
-				logger.WarnContext(r.Context(), "origin check rejected: malformed Referer",
+				logger.WarnContext(ctx, "origin check rejected: malformed Referer",
 					slog.String("referer", referer),
-					slog.String("path", r.URL.Path),
+					slog.String("path", path),
 				)
-				httperr.Write(w, httperr.Forbidden())
+				httperr.WriteFast(ctx, httperr.Forbidden())
 				return
 			}
 			if _, ok := set[refOrigin]; !ok {
-				logger.WarnContext(r.Context(), "origin check rejected via Referer",
+				logger.WarnContext(ctx, "origin check rejected via Referer",
 					slog.String("referer_origin", refOrigin),
-					slog.String("path", r.URL.Path),
+					slog.String("path", path),
 				)
-				httperr.Write(w, httperr.Forbidden())
+				httperr.WriteFast(ctx, httperr.Forbidden())
 				return
 			}
 
-			next.ServeHTTP(w, r)
-		})
+			next(ctx)
+		}
 	}
 }
 

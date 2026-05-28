@@ -2,14 +2,17 @@ package handlers
 
 import (
 	"encoding/json"
-	"net/http"
+
+	"github.com/valyala/fasthttp"
 
 	"github.com/dev1klas/1klas-identity/internal/transport/http/cookies"
 	"github.com/dev1klas/1klas-identity/internal/transport/http/dto"
 	httperr "github.com/dev1klas/1klas-identity/internal/transport/http/errors"
-	"github.com/dev1klas/1klas-identity/internal/transport/http/middleware"
 	"github.com/dev1klas/1klas-identity/internal/usecase/sign_up"
 )
+
+// maxBodyBytes mirrors the previous MaxBytesReader cap.
+const maxBodyBytes = 1 << 14
 
 // SignUpHandler wires HTTP to the sign_up use case.
 type SignUpHandler struct {
@@ -22,25 +25,33 @@ func NewSignUpHandler(uc *sign_up.UseCase, cookie cookies.Config) *SignUpHandler
 	return &SignUpHandler{uc: uc, cookie: cookie}
 }
 
-func (h *SignUpHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	var req dto.SignUpRequest
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<14)).Decode(&req); err != nil {
-		httperr.Write(w, httperr.InvalidBody())
+// Handle is the fasthttp request handler.
+func (h *SignUpHandler) Handle(ctx *fasthttp.RequestCtx) {
+	body := ctx.PostBody()
+	if len(body) > maxBodyBytes {
+		httperr.WriteFast(ctx, httperr.InvalidBody())
 		return
 	}
 
-	out, err := h.uc.Execute(r.Context(), sign_up.Input{
-		TenantID: middleware.TenantIDFrom(r.Context()),
+	var req dto.SignUpRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		httperr.WriteFast(ctx, httperr.InvalidBody())
+		return
+	}
+
+	out, err := h.uc.Execute(ctx, sign_up.Input{
+		TenantID: mustTenant(ctx),
 		Email:    req.Email,
 		Password: req.Password,
 	})
 	if err != nil {
-		httperr.Write(w, httperr.FromSignUp(err))
+		httperr.WriteFast(ctx, httperr.FromSignUp(err))
 		return
 	}
 
-	cookies.Set(w, h.cookie, out.SessionToken, out.SessionExpiresAt)
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-	_ = json.NewEncoder(w).Encode(dto.SignUpResponse{UserID: out.UserID.String()})
+	cookies.SetFast(ctx, h.cookie, out.SessionToken, out.SessionExpiresAt)
+	ctx.Response.Header.SetContentType("application/json")
+	ctx.SetStatusCode(fasthttp.StatusCreated)
+	resp, _ := json.Marshal(dto.SignUpResponse{UserID: out.UserID.String()})
+	ctx.SetBody(resp)
 }

@@ -3,6 +3,7 @@ package sign_out
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"time"
 
 	"github.com/google/uuid"
@@ -18,21 +19,33 @@ type UseCase struct {
 	uow      domain.UnitOfWork
 	sessions session.Repository
 	outbox   outbox.Repository
+	cache    session.Cache
 	clock    clock.Clock
+	logger   *slog.Logger
 }
 
 // New constructs the use case.
+//
+// cache is the write-through session cache. After Postgres commit the cache
+// entry is deleted (best-effort: a failure here is a logged warning, not
+// fatal — the cache entry will expire naturally).
+//
+// logger MUST be non-nil; tests can pass slog.New(slog.NewJSONHandler(io.Discard, nil)).
 func New(
 	uow domain.UnitOfWork,
 	sessions session.Repository,
 	outboxRepo outbox.Repository,
+	cache session.Cache,
 	clk clock.Clock,
+	logger *slog.Logger,
 ) *UseCase {
 	return &UseCase{
 		uow:      uow,
 		sessions: sessions,
 		outbox:   outboxRepo,
+		cache:    cache,
 		clock:    clk,
+		logger:   logger,
 	}
 }
 
@@ -84,6 +97,17 @@ func (uc *UseCase) Execute(ctx context.Context, in Input) (Output, error) {
 		return Output{}, ErrInternal
 	}
 	committed = true
+
+	// Invalidate the write-through session cache. Best-effort: cache misses
+	// will fall through to Postgres which now reflects the revocation.
+	if uc.cache != nil && in.TokenHashHex != "" {
+		if err := uc.cache.Delete(ctx, in.TokenHashHex); err != nil {
+			uc.logger.WarnContext(ctx, "session cache delete failed after sign-out",
+				slog.String("session_id", in.SessionID.String()),
+				slog.String("err", err.Error()),
+			)
+		}
+	}
 
 	return Output{}, nil
 }

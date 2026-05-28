@@ -4,8 +4,9 @@
 package cookies
 
 import (
-	"net/http"
 	"time"
+
+	"github.com/valyala/fasthttp"
 )
 
 const (
@@ -31,44 +32,48 @@ func (c Config) Name() string {
 	return NameInsecure
 }
 
-// Set writes the session cookie with the given plaintext token and absolute
-// expiry. Always HttpOnly + SameSite=Lax + Path=/.
-func Set(w http.ResponseWriter, cfg Config, token string, expiresAt time.Time) {
-	c := &http.Cookie{
-		Name:     cfg.Name(),
-		Value:    token,
-		Path:     "/",
-		Expires:  expiresAt,
-		MaxAge:   int(time.Until(expiresAt).Seconds()),
-		HttpOnly: true,
-		Secure:   cfg.Secure,
-		SameSite: http.SameSiteLaxMode,
-	}
-	http.SetCookie(w, c)
+// SetFast writes the session cookie with the given plaintext token and
+// absolute expiry. Always HttpOnly + SameSite=Lax + Path=/.
+func SetFast(ctx *fasthttp.RequestCtx, cfg Config, token string, expiresAt time.Time) {
+	c := fasthttp.AcquireCookie()
+	defer fasthttp.ReleaseCookie(c)
+	c.SetKey(cfg.Name())
+	c.SetValue(token)
+	c.SetPath("/")
+	c.SetExpire(expiresAt)
+	c.SetMaxAge(int(time.Until(expiresAt).Seconds()))
+	c.SetHTTPOnly(true)
+	c.SetSecure(cfg.Secure)
+	c.SetSameSite(fasthttp.CookieSameSiteLaxMode)
+	ctx.Response.Header.SetCookie(c)
 }
 
-// Clear emits a Set-Cookie that overwrites the existing one with Max-Age=0.
-func Clear(w http.ResponseWriter, cfg Config) {
-	c := &http.Cookie{
-		Name:     cfg.Name(),
-		Value:    "",
-		Path:     "/",
-		MaxAge:   -1,
-		HttpOnly: true,
-		Secure:   cfg.Secure,
-		SameSite: http.SameSiteLaxMode,
-	}
-	http.SetCookie(w, c)
+// ClearFast emits a Set-Cookie that overwrites the existing one with
+// Max-Age=0 / Expires in the past.
+func ClearFast(ctx *fasthttp.RequestCtx, cfg Config) {
+	c := fasthttp.AcquireCookie()
+	defer fasthttp.ReleaseCookie(c)
+	c.SetKey(cfg.Name())
+	c.SetValue("")
+	c.SetPath("/")
+	// fasthttp.CookieExpireDelete is the canonical "delete me" sentinel.
+	c.SetExpire(fasthttp.CookieExpireDelete)
+	c.SetMaxAge(-1)
+	c.SetHTTPOnly(true)
+	c.SetSecure(cfg.Secure)
+	c.SetSameSite(fasthttp.CookieSameSiteLaxMode)
+	ctx.Response.Header.SetCookie(c)
 }
 
-// ReadSessionCookie inspects r for either supported cookie name. Returns the
-// raw value and true on hit.
-func ReadSessionCookie(r *http.Request) (string, bool) {
-	if c, err := r.Cookie(NameSecure); err == nil && c.Value != "" {
-		return c.Value, true
+// ReadSessionCookieFast inspects ctx for either supported cookie name.
+// Returns the raw value (as a copy — safe to keep past handler return) and
+// true on hit.
+func ReadSessionCookieFast(ctx *fasthttp.RequestCtx) (string, bool) {
+	if v := ctx.Request.Header.Cookie(NameSecure); len(v) > 0 {
+		return string(v), true
 	}
-	if c, err := r.Cookie(NameInsecure); err == nil && c.Value != "" {
-		return c.Value, true
+	if v := ctx.Request.Header.Cookie(NameInsecure); len(v) > 0 {
+		return string(v), true
 	}
 	return "", false
 }

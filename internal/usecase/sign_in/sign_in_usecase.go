@@ -2,6 +2,7 @@ package sign_in
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -31,6 +32,7 @@ type UseCase struct {
 	users      user.Repository
 	sessions   session.Repository
 	outbox     outbox.Repository
+	cache      session.Cache
 	hasher     user.PasswordHasher
 	tokens     session.TokenGenerator
 	clock      clock.Clock
@@ -42,6 +44,10 @@ type UseCase struct {
 // New constructs the use case. The dummy hash is generated here for timing
 // safety on unknown-email paths.
 //
+// cache is the write-through session cache (Postgres remains source of truth).
+// On a cache write failure the use case logs WARN and proceeds; the next
+// SessionAuth miss will repopulate via Postgres.
+//
 // logger is used to surface unexpected dummy-KDF verify failures (which would
 // signal hasher misconfiguration); it MUST be non-nil. Callers in tests can
 // pass slog.New(slog.NewJSONHandler(io.Discard, nil)).
@@ -51,6 +57,7 @@ func New(
 	users user.Repository,
 	sessions session.Repository,
 	outboxRepo outbox.Repository,
+	cache session.Cache,
 	hasher user.PasswordHasher,
 	tokens session.TokenGenerator,
 	clk clock.Clock,
@@ -66,6 +73,7 @@ func New(
 		users:      users,
 		sessions:   sessions,
 		outbox:     outboxRepo,
+		cache:      cache,
 		hasher:     hasher,
 		tokens:     tokens,
 		clock:      clk,
@@ -161,6 +169,19 @@ func (uc *UseCase) Execute(ctx context.Context, in Input) (Output, error) {
 		return Output{}, ErrInternal
 	}
 	committed = true
+
+	// Write-through into the session cache. Postgres is the source of truth;
+	// a failure here is a logged warning, never a fatal — the next
+	// SessionAuth miss will repopulate via Postgres.
+	if uc.cache != nil {
+		tokenHashHex := hex.EncodeToString(tok.Hash())
+		if err := uc.cache.Set(ctx, tokenHashHex, sessionID.String(), uc.sessionTTL); err != nil {
+			uc.logger.WarnContext(ctx, "session cache write failed after sign-in",
+				slog.String("session_id", sessionID.String()),
+				slog.String("err", err.Error()),
+			)
+		}
+	}
 
 	return Output{
 		UserID:           u.ID(),

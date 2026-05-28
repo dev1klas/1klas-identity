@@ -4,19 +4,20 @@ import (
 	"context"
 	"errors"
 	"log/slog"
-	stdhttp "net/http"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/valyala/fasthttp"
 
 	"github.com/dev1klas/1klas-identity/internal/config"
 	"github.com/dev1klas/1klas-identity/internal/domain/clock"
 	"github.com/dev1klas/1klas-identity/internal/infrastructure/argon2id"
 	"github.com/dev1klas/1klas-identity/internal/infrastructure/postgres"
 	"github.com/dev1klas/1klas-identity/internal/infrastructure/tokens"
+	"github.com/dev1klas/1klas-identity/internal/infrastructure/valkey"
 	"github.com/dev1klas/1klas-identity/internal/observability"
 	transport "github.com/dev1klas/1klas-identity/internal/transport/http"
 	"github.com/dev1klas/1klas-identity/internal/transport/http/cookies"
@@ -63,6 +64,27 @@ func main() {
 		}
 	}
 
+	// Valkey session cache. Fail-fast PING — a Valkey outage at boot is a
+	// configuration error, not a runtime degradation.
+	cache, err := valkey.New(valkey.Config{
+		URL:         cfg.ValkeyURL,
+		DialTimeout: cfg.ValkeyDialTimeout,
+		OpTimeout:   cfg.ValkeyOpTimeout,
+	})
+	if err != nil {
+		logger.Error("valkey init failed", "error", err.Error())
+		os.Exit(1)
+	}
+	defer func() { _ = cache.Close() }()
+
+	pingCtx, pingCancel := context.WithTimeout(ctx, 3*time.Second)
+	if err := cache.Ping(pingCtx); err != nil {
+		pingCancel()
+		logger.Error("valkey ping failed", "error", err.Error())
+		os.Exit(1)
+	}
+	pingCancel()
+
 	// Wiring.
 	uow := postgres.NewUnitOfWork(pool)
 	userRepo := postgres.NewUserRepository(pool)
@@ -79,51 +101,62 @@ func main() {
 	tokGen := tokens.New()
 	clk := clock.Real{}
 
-	signUpUC := sign_up.New(uow, userRepo, sessionRepo, outboxRepo, hasher, tokGen, clk, cfg.SessionTTL)
-	signInUC, err := sign_in.New(ctx, uow, userRepo, sessionRepo, outboxRepo, hasher, tokGen, clk, cfg.SessionTTL, logger)
+	signUpUC := sign_up.New(uow, userRepo, sessionRepo, outboxRepo, cache, hasher, tokGen, clk, cfg.SessionTTL, logger)
+	signInUC, err := sign_in.New(ctx, uow, userRepo, sessionRepo, outboxRepo, cache, hasher, tokGen, clk, cfg.SessionTTL, logger)
 	if err != nil {
 		logger.Error("sign_in init failed", "error", err.Error())
 		os.Exit(1)
 	}
-	signOutUC := sign_out.New(uow, sessionRepo, outboxRepo, clk)
+	signOutUC := sign_out.New(uow, sessionRepo, outboxRepo, cache, clk, logger)
 	getMeUC := get_me.New(userRepo)
 
 	cookieCfg := cookies.Config{Secure: cfg.CookieSecure}
 
-	mux := transport.NewMux(transport.Deps{
+	handler := transport.NewHandler(transport.Deps{
 		SignUp:    signUpUC,
 		SignIn:    signInUC,
 		SignOut:   signOutUC,
 		GetMe:     getMeUC,
 		Sessions:  sessionRepo,
+		Cache:     cache,
 		Cookie:    cookieCfg,
 		Recover:   middleware.Recover(logger),
 		AccessLog: middleware.AccessLog(logger),
 		Origin:    middleware.OriginCheck(logger, cfg.AllowedOrigins),
+		OTel:      middleware.OTelTrace,
+		SessionMW: middleware.Session(sessionRepo, cache, logger),
 	})
 
-	srv := &stdhttp.Server{
-		Addr:         cfg.Addr,
-		Handler:      mux,
-		ReadTimeout:  35 * time.Second,
-		WriteTimeout: 35 * time.Second,
-		IdleTimeout:  120 * time.Second,
+	srv := &fasthttp.Server{
+		Handler:            handler,
+		Name:               "1klas-identity",
+		ReadTimeout:        35 * time.Second,
+		WriteTimeout:       35 * time.Second,
+		IdleTimeout:        120 * time.Second,
+		MaxRequestBodySize: 1 << 20, // 1 MiB ceiling; per-handler caps apply at the handler.
 	}
 
+	errCh := make(chan error, 1)
 	go func() {
 		logger.Info("identity listening", "addr", cfg.Addr)
-		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, stdhttp.ErrServerClosed) {
-			logger.Error("server error", "error", err.Error())
-			os.Exit(1)
+		if err := srv.ListenAndServe(cfg.Addr); err != nil {
+			errCh <- err
 		}
 	}()
 
-	<-ctx.Done()
-	logger.Info("shutting down")
+	select {
+	case <-ctx.Done():
+		logger.Info("shutting down")
+	case err := <-errCh:
+		if err != nil {
+			logger.Error("server error", "error", err.Error())
+			os.Exit(1)
+		}
+	}
 
 	shutCtx, shutCancel := context.WithTimeout(context.Background(), shutdownGrace)
 	defer shutCancel()
-	if err := srv.Shutdown(shutCtx); err != nil {
+	if err := srv.ShutdownWithContext(shutCtx); err != nil && !errors.Is(err, context.DeadlineExceeded) {
 		logger.Error("graceful shutdown failed", "error", err.Error())
 		os.Exit(1)
 	}

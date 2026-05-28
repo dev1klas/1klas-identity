@@ -2,11 +2,11 @@ package handlers
 
 import (
 	"encoding/json"
-	"net/http"
+
+	"github.com/valyala/fasthttp"
 
 	"github.com/dev1klas/1klas-identity/internal/transport/http/dto"
 	httperr "github.com/dev1klas/1klas-identity/internal/transport/http/errors"
-	"github.com/dev1klas/1klas-identity/internal/transport/http/middleware"
 	"github.com/dev1klas/1klas-identity/internal/usecase/get_me"
 )
 
@@ -20,21 +20,24 @@ func NewGetMeHandler(uc *get_me.UseCase) *GetMeHandler {
 	return &GetMeHandler{uc: uc}
 }
 
-func (h *GetMeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	out, err := h.uc.Execute(r.Context(), get_me.Input{
-		TenantID: middleware.TenantIDFrom(r.Context()),
-		UserID:   middleware.UserIDFrom(r.Context()),
+// Handle is the fasthttp request handler.
+func (h *GetMeHandler) Handle(ctx *fasthttp.RequestCtx) {
+	out, err := h.uc.Execute(ctx, get_me.Input{
+		TenantID: mustTenant(ctx),
+		UserID:   userIDOrNil(ctx),
 	})
 	if err != nil {
-		httperr.Write(w, httperr.FromGetMe(err))
+		httperr.WriteFast(ctx, httperr.FromGetMe(err))
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(dto.MeResponse{
+	ctx.Response.Header.SetContentType("application/json")
+	ctx.SetStatusCode(fasthttp.StatusOK)
+	resp, _ := json.Marshal(dto.MeResponse{
 		UserID:    out.UserID.String(),
 		Email:     out.Email,
 		Status:    out.Status,
 		CreatedAt: out.CreatedAt,
 	})
+	ctx.SetBody(resp)
 }

@@ -12,5 +12,18 @@ services:
     volumes:
       - identity_pg_data:/var/lib/postgresql/data
 
+  # Valkey is Redis wire-compatible (RESP). go-redis/v9 talks to it
+  # unchanged. Used as the write-through session cache (ADR-0008).
+  valkey:
+    image: valkey/valkey:8-alpine
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
 volumes:
   identity_pg_data:

@@ -1,8 +1,8 @@
-// Package http wires the HTTP surface of the identity service.
+// Package http wires the HTTP surface of the identity service on fasthttp.
 package http
 
 import (
-	"net/http"
+	"github.com/valyala/fasthttp"
 
 	"github.com/dev1klas/1klas-identity/internal/domain/session"
 	"github.com/dev1klas/1klas-identity/internal/transport/http/handlers"
@@ -22,23 +22,27 @@ type Deps struct {
 	SignOut   *sign_out.UseCase
 	GetMe     *get_me.UseCase
 	Sessions  session.Repository
+	Cache     session.Cache
 	Cookie    cookies.Config
 	Recover   middleware.Middleware
 	AccessLog middleware.Middleware
 	Origin    middleware.Middleware
+	OTel      middleware.Middleware
+	SessionMW middleware.Middleware
 }
 
-// NewMux builds the HTTP mux with the full middleware stack.
-func NewMux(d Deps) http.Handler {
-	mux := http.NewServeMux()
-
-	// Public mutating routes: Recover + AccessLog + RequestID + Tenancy + Origin.
+// NewHandler returns a single fasthttp.RequestHandler that dispatches on
+// method + path. fasthttp has no built-in ServeMux so we route by hand —
+// the route table is small enough at walking skeleton to keep here.
+func NewHandler(d Deps) fasthttp.RequestHandler {
+	// Public mutating routes: Recover + AccessLog + OTel + RequestID + Tenancy + Origin.
 	// Origin enforcement is the walking-skeleton CSRF mitigation
 	// (SPEC-identity §48-49). Recover is outermost so panics in any other
 	// middleware are still trapped.
 	publicMutatingChain := middleware.Chain(
 		d.Recover,
 		d.AccessLog,
+		d.OTel,
 		middleware.RequestID,
 		middleware.Tenancy,
 		d.Origin,
@@ -49,6 +53,7 @@ func NewMux(d Deps) http.Handler {
 	publicReadChain := middleware.Chain(
 		d.Recover,
 		d.AccessLog,
+		d.OTel,
 		middleware.RequestID,
 		middleware.Tenancy,
 	)
@@ -58,9 +63,10 @@ func NewMux(d Deps) http.Handler {
 	protectedMutatingChain := middleware.Chain(
 		d.Recover,
 		d.AccessLog,
+		d.OTel,
 		middleware.RequestID,
 		middleware.Tenancy, // overwritten by Session on success
-		middleware.Session(d.Sessions),
+		d.SessionMW,
 		d.Origin,
 	)
 
@@ -68,26 +74,51 @@ func NewMux(d Deps) http.Handler {
 	protectedReadChain := middleware.Chain(
 		d.Recover,
 		d.AccessLog,
+		d.OTel,
 		middleware.RequestID,
 		middleware.Tenancy, // overwritten by Session on success
-		middleware.Session(d.Sessions),
+		d.SessionMW,
 	)
 
 	// Infra endpoints get recover + access log (no tenant / no CSRF).
 	infraChain := middleware.Chain(d.Recover, d.AccessLog)
 
-	mux.Handle("/healthz", infraChain(http.HandlerFunc(handlers.Healthz)))
-	mux.Handle("/openapi.json", infraChain(http.HandlerFunc(handlers.OpenAPI)))
+	signUpH := handlers.NewSignUpHandler(d.SignUp, d.Cookie)
+	signInH := handlers.NewSignInHandler(d.SignIn, d.Cookie)
+	signOutH := handlers.NewSignOutHandler(d.SignOut, d.Cookie)
+	getMeH := handlers.NewGetMeHandler(d.GetMe)
 
-	signUp := handlers.NewSignUpHandler(d.SignUp, d.Cookie)
-	signIn := handlers.NewSignInHandler(d.SignIn, d.Cookie)
-	signOut := handlers.NewSignOutHandler(d.SignOut, d.Cookie)
-	getMe := handlers.NewGetMeHandler(d.GetMe)
+	signUpRoute := publicMutatingChain(signUpH.Handle)
+	signInRoute := publicMutatingChain(signInH.Handle)
+	signOutRoute := protectedMutatingChain(signOutH.Handle)
+	getMeRoute := protectedReadChain(getMeH.Handle)
+	healthzRoute := infraChain(handlers.Healthz)
+	openapiRoute := infraChain(handlers.OpenAPI)
 
-	mux.Handle("POST /api/v1/crm/public/identity/sign-up", publicMutatingChain(signUp))
-	mux.Handle("POST /api/v1/crm/public/identity/sessions", publicMutatingChain(signIn))
-	mux.Handle("DELETE /api/v1/crm/public/identity/sessions/current", protectedMutatingChain(signOut))
-	mux.Handle("GET /api/v1/crm/public/identity/profile/me", protectedReadChain(getMe))
+	return func(ctx *fasthttp.RequestCtx) {
+		method := string(ctx.Method())
+		path := string(ctx.Path())
 
-	return mux
+		switch {
+		case method == fasthttp.MethodGet && path == "/healthz":
+			healthzRoute(ctx)
+		case method == fasthttp.MethodGet && path == "/openapi.json":
+			openapiRoute(ctx)
+		case method == fasthttp.MethodPost && path == "/api/v1/crm/public/identity/sign-up":
+			signUpRoute(ctx)
+		case method == fasthttp.MethodPost && path == "/api/v1/crm/public/identity/sessions":
+			signInRoute(ctx)
+		case method == fasthttp.MethodDelete && path == "/api/v1/crm/public/identity/sessions/current":
+			signOutRoute(ctx)
+		case method == fasthttp.MethodGet && path == "/api/v1/crm/public/identity/profile/me":
+			getMeRoute(ctx)
+		default:
+			WriteJSON(ctx, fasthttp.StatusNotFound, map[string]any{
+				"error": map[string]string{
+					"code":    "not_found",
+					"message": "Route not found",
+				},
+			})
+		}
+	}
 }

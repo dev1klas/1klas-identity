@@ -9,11 +9,13 @@ import (
 )
 
 const (
-	defaultAddr           = ":8080"
-	defaultSessionTTLHrs  = 168
-	defaultArgon2MemoryKi = 65536
-	defaultArgon2Time     = 3
-	defaultArgon2Para     = 1
+	defaultAddr                = ":8080"
+	defaultSessionTTLHrs       = 168
+	defaultArgon2MemoryKi      = 65536
+	defaultArgon2Time          = 3
+	defaultArgon2Para          = 1
+	defaultValkeyDialTimeoutMs = 200
+	defaultValkeyOpTimeoutMs   = 100
 )
 
 // Config holds runtime configuration.
@@ -36,6 +38,14 @@ type Config struct {
 	// exists for local docker-compose convenience where running a separate
 	// binary is friction.
 	RunMigrationsOnBoot bool
+	// ValkeyURL is the redis:// or rediss:// URL of the Valkey instance used
+	// for the write-through session cache. Required: Load refuses to start
+	// otherwise (see ADR-0008).
+	ValkeyURL string
+	// ValkeyDialTimeout is the connection establishment deadline.
+	ValkeyDialTimeout time.Duration
+	// ValkeyOpTimeout is the per-operation deadline.
+	ValkeyOpTimeout time.Duration
 }
 
 // Load reads configuration from env. Returns ErrMissingPostgresURL if
@@ -51,10 +61,32 @@ func Load() (Config, error) {
 		Argon2Time:          defaultArgon2Time,
 		Argon2Parallel:      defaultArgon2Para,
 		RunMigrationsOnBoot: envBool("RUN_MIGRATIONS_ON_BOOT", false),
+		ValkeyURL:           os.Getenv("VALKEY_URL"),
+		ValkeyDialTimeout:   time.Duration(defaultValkeyDialTimeoutMs) * time.Millisecond,
+		ValkeyOpTimeout:     time.Duration(defaultValkeyOpTimeoutMs) * time.Millisecond,
 	}
 
 	if cfg.PostgresURL == "" {
 		return Config{}, ErrMissingPostgresURL
+	}
+
+	if cfg.ValkeyURL == "" {
+		return Config{}, ErrMissingValkeyURL
+	}
+
+	if v := os.Getenv("VALKEY_DIAL_TIMEOUT_MS"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n <= 0 {
+			return Config{}, ErrInvalidInt
+		}
+		cfg.ValkeyDialTimeout = time.Duration(n) * time.Millisecond
+	}
+	if v := os.Getenv("VALKEY_OP_TIMEOUT_MS"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n <= 0 {
+			return Config{}, ErrInvalidInt
+		}
+		cfg.ValkeyOpTimeout = time.Duration(n) * time.Millisecond
 	}
 
 	if v := os.Getenv("SESSION_TTL_HOURS"); v != "" {
