@@ -11,6 +11,10 @@ CREATE TABLE identity.outbox_events (
 );
 CREATE INDEX outbox_unpublished_idx ON identity.outbox_events (created_at)
     WHERE published_at IS NULL;
+-- Tenant-scoped consumer reads need a (tenant_id, created_at) index so they
+-- can scan a single tenant's events ordered by time without a full sequential
+-- scan + filter. Partitioning by month is a separate follow-up.
+CREATE INDEX outbox_tenant_created_idx ON identity.outbox_events (tenant_id, created_at);
 
 -- +goose Down
 DROP TABLE IF EXISTS identity.outbox_events;
