@@ -70,6 +70,9 @@ func FromSignUp(err error) Response {
 // FromSignIn maps a sign_in error to a Response.
 func FromSignIn(err error) Response {
 	switch {
+	// ErrInvalidEmail collapses into the same 401 / invalid_credentials as
+	// ErrInvalidCredentials by design: surfacing a 400 here would leak whether
+	// the address was even syntactically valid, an account-enumeration vector.
 	case errors.Is(err, sign_in.ErrInvalidCredentials), errors.Is(err, sign_in.ErrInvalidEmail):
 		return Response{Status: http.StatusUnauthorized, Code: "invalid_credentials", Message: "Invalid credentials"}
 	default:
