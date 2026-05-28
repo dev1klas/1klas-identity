@@ -91,7 +91,9 @@ func main() {
 		GetMe:     getMeUC,
 		Sessions:  sessionRepo,
 		Cookie:    cookieCfg,
+		Recover:   middleware.Recover(logger),
 		AccessLog: middleware.AccessLog(logger),
+		Origin:    middleware.OriginCheck(logger, cfg.AllowedOrigins),
 	})
 
 	srv := &stdhttp.Server{

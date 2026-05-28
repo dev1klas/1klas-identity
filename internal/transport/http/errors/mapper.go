@@ -49,6 +49,11 @@ func Internal() Response {
 	return Response{Status: http.StatusInternalServerError, Code: "internal", Message: "Internal server error"}
 }
 
+// Forbidden covers cross-origin / CSRF rejections on mutating routes.
+func Forbidden() Response {
+	return Response{Status: http.StatusForbidden, Code: "forbidden", Message: "Request forbidden"}
+}
+
 // FromSignUp maps a sign_up error to a Response.
 func FromSignUp(err error) Response {
 	switch {

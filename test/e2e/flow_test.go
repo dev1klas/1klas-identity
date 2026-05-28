@@ -98,7 +98,9 @@ func bringUpServer(t *testing.T) (*httptest.Server, func()) {
 		GetMe:     getMeUC,
 		Sessions:  sessRepo,
 		Cookie:    cookies.Config{Secure: false}, // httptest uses HTTP
+		Recover:   middleware.Recover(logger),
 		AccessLog: middleware.AccessLog(logger),
+		Origin:    middleware.OriginCheck(logger, []string{"http://localhost:5173"}),
 	})
 
 	srv := httptest.NewServer(mux)
@@ -152,6 +154,7 @@ func TestEndToEndFlow(t *testing.T) {
 
 	// 3. Sign-out
 	req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/api/v1/crm/public/identity/sessions/current", nil)
+	req.Header.Set("Origin", testOrigin)
 	for _, c := range jar.cookies {
 		req.AddCookie(c)
 	}
@@ -219,12 +222,15 @@ func TestHealthzAndOpenAPI(t *testing.T) {
 	}
 }
 
+const testOrigin = "http://localhost:5173"
+
 func postJSON(c *http.Client, url, body string) (*http.Response, error) {
 	req, err := http.NewRequest(http.MethodPost, url, bytes.NewBufferString(body))
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Origin", testOrigin)
 	return c.Do(req)
 }
 

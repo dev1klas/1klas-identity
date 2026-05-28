@@ -4,6 +4,7 @@ package config
 import (
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -25,6 +26,10 @@ type Config struct {
 	Argon2MemoryKiB uint32
 	Argon2Time      uint32
 	Argon2Parallel  uint8
+	// AllowedOrigins is the CSRF allow-list for mutating routes. Sourced from
+	// ALLOWED_ORIGINS (comma-separated). Must contain at least one origin —
+	// Load refuses to start otherwise.
+	AllowedOrigins []string
 }
 
 // Load reads configuration from env. Returns ErrMissingPostgresURL if
@@ -73,6 +78,17 @@ func Load() (Config, error) {
 			return Config{}, ErrInvalidInt
 		}
 		cfg.Argon2Parallel = uint8(n)
+	}
+
+	raw := os.Getenv("ALLOWED_ORIGINS")
+	for _, p := range strings.Split(raw, ",") {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			cfg.AllowedOrigins = append(cfg.AllowedOrigins, p)
+		}
+	}
+	if len(cfg.AllowedOrigins) == 0 {
+		return Config{}, ErrMissingAllowedOrigins
 	}
 
 	return cfg, nil
