@@ -79,11 +79,11 @@ func (r *UserRepository) FindByID(ctx context.Context, t tenant.ID, id uuid.UUID
 	return r.scanOne(ctx, sql, args)
 }
 
-func (r *UserRepository) scanOne(ctx context.Context, sql string, args []interface{}) (user.User, error) {
+func (r *UserRepository) scanOne(ctx context.Context, sql string, args []any) (user.User, error) {
 	var (
-		id, tid                            uuid.UUID
-		emailStr, hashStr, statusStr       string
-		createdAt, updatedAt               = newTimes()
+		id, tid                      uuid.UUID
+		emailStr, hashStr, statusStr string
+		createdAt, updatedAt         = newTimes()
 	)
 	err := r.pool.QueryRow(ctx, sql, args...).Scan(&id, &tid, &emailStr, &hashStr, &statusStr, createdAt, updatedAt)
 	if err != nil {

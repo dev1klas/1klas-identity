@@ -17,14 +17,14 @@ const (
 
 // Config holds runtime configuration.
 type Config struct {
-	Addr             string
-	PostgresURL      string
-	CookieDomain     string
-	CookieSecure     bool
-	SessionTTL       time.Duration
-	Argon2MemoryKiB  uint32
-	Argon2Time       uint32
-	Argon2Parallel   uint8
+	Addr            string
+	PostgresURL     string
+	CookieDomain    string
+	CookieSecure    bool
+	SessionTTL      time.Duration
+	Argon2MemoryKiB uint32
+	Argon2Time      uint32
+	Argon2Parallel  uint8
 }
 
 // Load reads configuration from env. Returns ErrMissingPostgresURL if

@@ -17,13 +17,13 @@ import (
 
 // Deps bundles everything the router needs.
 type Deps struct {
-	SignUp       *sign_up.UseCase
-	SignIn       *sign_in.UseCase
-	SignOut      *sign_out.UseCase
-	GetMe        *get_me.UseCase
-	Sessions     session.Repository
-	Cookie       cookies.Config
-	AccessLog    middleware.Middleware
+	SignUp    *sign_up.UseCase
+	SignIn    *sign_in.UseCase
+	SignOut   *sign_out.UseCase
+	GetMe     *get_me.UseCase
+	Sessions  session.Repository
+	Cookie    cookies.Config
+	AccessLog middleware.Middleware
 }
 
 // NewMux builds the HTTP mux with the full middleware stack.

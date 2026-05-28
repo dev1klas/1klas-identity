@@ -11,9 +11,9 @@ import (
 // Tx is an opaque transaction handle. The concrete pgx.Tx is wrapped in
 // infrastructure; domain only ever forwards the value to repository methods.
 //
-// To preserve the layering rule ("no interface{} in domain"), Tx is a
-// concrete struct holding an unexported value. Only infrastructure can read
-// the inner value, via NewTx + InnerTx.
+// To preserve the layering rule (no bare empty-interface in domain), Tx is
+// a concrete struct holding an unexported value. Only infrastructure can
+// read the inner value, via NewTx + InnerTx.
 type Tx struct {
 	inner any
 }

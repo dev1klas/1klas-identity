@@ -18,14 +18,14 @@ import (
 // UseCase orchestrates user creation and initial session issuance inside a
 // single database transaction.
 type UseCase struct {
-	uow          domain.UnitOfWork
-	users        user.Repository
-	sessions     session.Repository
-	outbox       outbox.Repository
-	hasher       user.PasswordHasher
-	tokens       session.TokenGenerator
-	clock        clock.Clock
-	sessionTTL   time.Duration
+	uow        domain.UnitOfWork
+	users      user.Repository
+	sessions   session.Repository
+	outbox     outbox.Repository
+	hasher     user.PasswordHasher
+	tokens     session.TokenGenerator
+	clock      clock.Clock
+	sessionTTL time.Duration
 }
 
 // New constructs the use case.

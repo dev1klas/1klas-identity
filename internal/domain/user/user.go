@@ -12,10 +12,10 @@ import (
 type Status string
 
 const (
-	StatusActive             Status = "active"
-	StatusPendingActivation  Status = "pending_activation"
-	StatusSuspended          Status = "suspended"
-	StatusRejected           Status = "rejected"
+	StatusActive            Status = "active"
+	StatusPendingActivation Status = "pending_activation"
+	StatusSuspended         Status = "suspended"
+	StatusRejected          Status = "rejected"
 )
 
 // User is the Identity aggregate root.
@@ -58,10 +58,10 @@ func Hydrate(id uuid.UUID, t tenant.ID, email Email, hash PasswordHash, status S
 
 // Accessors. No mutation on the walking skeleton.
 
-func (u User) ID() uuid.UUID            { return u.id }
-func (u User) TenantID() tenant.ID      { return u.tenantID }
-func (u User) Email() Email             { return u.email }
+func (u User) ID() uuid.UUID              { return u.id }
+func (u User) TenantID() tenant.ID        { return u.tenantID }
+func (u User) Email() Email               { return u.email }
 func (u User) PasswordHash() PasswordHash { return u.passwordHash }
-func (u User) Status() Status           { return u.status }
-func (u User) CreatedAt() time.Time     { return u.createdAt }
-func (u User) UpdatedAt() time.Time     { return u.updatedAt }
+func (u User) Status() Status             { return u.status }
+func (u User) CreatedAt() time.Time       { return u.createdAt }
+func (u User) UpdatedAt() time.Time       { return u.updatedAt }

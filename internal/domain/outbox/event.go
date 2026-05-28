@@ -14,9 +14,9 @@ import (
 
 // Event topic names emitted by this service. Versioned.
 const (
-	TopicUserCreated     = "identity.user.created.v1"
-	TopicSessionCreated  = "identity.session.created.v1"
-	TopicSessionRevoked  = "identity.session.revoked.v1"
+	TopicUserCreated    = "identity.user.created.v1"
+	TopicSessionCreated = "identity.session.created.v1"
+	TopicSessionRevoked = "identity.session.revoked.v1"
 )
 
 // Event is one outbox row.
