@@ -38,6 +38,18 @@ import (
 const (
 	migrationsDir  = "migrations"
 	migrateTimeout = 5 * time.Minute
+
+	// schemaName is the Postgres schema owned by the identity_app role.
+	// The identity_app user does NOT have CREATE on schema public (DO
+	// managed Postgres locks public down to the cluster admin), so all
+	// objects — including goose's bookkeeping table — live under this
+	// schema.
+	schemaName = "identity"
+
+	// gooseVersionTable is the fully-qualified name of goose's version
+	// table. Setting it here keeps goose entirely out of the public
+	// schema, which the runtime DB user has no privileges on.
+	gooseVersionTable = schemaName + ".goose_db_version"
 )
 
 // usage describes the supported subcommands. Printed on -h / --help and on
@@ -103,12 +115,23 @@ func run(logger *slog.Logger) error {
 		return fmt.Errorf("pinging database: %w", err)
 	}
 
+	// Bootstrap the identity schema before goose touches the version table.
+	// The version table is qualified into this schema below, so the schema
+	// must exist on the very first run. CREATE SCHEMA IF NOT EXISTS is
+	// idempotent and safe on every subsequent migrate.
+	if _, err := db.ExecContext(ctx, "CREATE SCHEMA IF NOT EXISTS "+schemaName); err != nil {
+		return fmt.Errorf("bootstrapping schema %q: %w", schemaName, err)
+	}
+
 	// Source migrations from the embedded FS shared with the server binary,
 	// so a single source-of-truth ships everywhere.
 	goose.SetBaseFS(postgres.MigrationsFS())
 	if err := goose.SetDialect("postgres"); err != nil {
 		return fmt.Errorf("setting goose dialect: %w", err)
 	}
+	// Keep goose's bookkeeping out of the public schema (the runtime DB
+	// user has no privileges there in DO managed Postgres).
+	goose.SetTableName(gooseVersionTable)
 
 	command, args := parseArgs(os.Args[1:])
 	logger.Info("starting migration", "command", command, "args", args, "timeout", migrateTimeout.String())
