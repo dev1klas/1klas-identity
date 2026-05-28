@@ -8,7 +8,6 @@ import (
 
 	"github.com/dev1klas/1klas-identity/internal/usecase/get_me"
 	"github.com/dev1klas/1klas-identity/internal/usecase/sign_in"
-	"github.com/dev1klas/1klas-identity/internal/usecase/sign_out"
 	"github.com/dev1klas/1klas-identity/internal/usecase/sign_up"
 )
 
@@ -79,13 +78,14 @@ func FromSignIn(err error) Response {
 }
 
 // FromSignOut maps a sign_out error to a Response.
-func FromSignOut(err error) Response {
-	switch {
-	case errors.Is(err, sign_out.ErrInternal):
-		return Internal()
-	default:
-		return Internal()
-	}
+//
+// sign_out has no recoverable domain errors today — every failure is an
+// internal one. Sign-out is idempotent at the domain layer (already-revoked
+// sessions return nil), so the caller never sees a "not found" path. If new
+// branches are introduced in sign_out_errors.go, mirror FromSignUp / FromSignIn
+// and add concrete errors.Is cases here.
+func FromSignOut(_ error) Response {
+	return Internal()
 }
 
 // FromGetMe maps a get_me error to a Response.
