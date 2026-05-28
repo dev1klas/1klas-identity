@@ -1,0 +1,29 @@
+version: "2"
+
+run:
+  timeout: 5m
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/dev1klas/1klas-identity
+
+linters:
+  default: none
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+
+issues:
+  exclude-rules:
+    - path: "_test\\.go"
+      linters:
+        - errcheck

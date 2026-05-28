@@ -1,0 +1,165 @@
+openapi: 3.0.3
+info:
+  title: 1klas Identity API
+  version: 0.1.0
+  description: |
+    Walking-skeleton identity service. Sign-up, sign-in, sign-out, profile/me.
+servers:
+  - url: https://api.1klasdev.com
+paths:
+  /api/v1/crm/public/identity/sign-up:
+    post:
+      summary: Create a new user account and start a session.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CredentialsRequest'
+      responses:
+        '201':
+          description: Created
+          headers:
+            Set-Cookie:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserRef'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /api/v1/crm/public/identity/sessions:
+    post:
+      summary: Sign in with email + password; sets a session cookie.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CredentialsRequest'
+      responses:
+        '200':
+          description: OK
+          headers:
+            Set-Cookie:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserRef'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/v1/crm/public/identity/sessions/current:
+    delete:
+      summary: Sign out the current session.
+      security:
+        - sessionCookie: []
+      responses:
+        '204':
+          description: No Content
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/v1/crm/public/identity/profile/me:
+    get:
+      summary: Return the authenticated user's profile.
+      security:
+        - sessionCookie: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Me'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /healthz:
+    get:
+      summary: Liveness probe.
+      responses:
+        '200':
+          description: OK
+  /openapi.json:
+    get:
+      summary: Serve this OpenAPI document.
+      responses:
+        '200':
+          description: OK
+components:
+  securitySchemes:
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: __Host-session
+  schemas:
+    CredentialsRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          minLength: 12
+          maxLength: 256
+    UserRef:
+      type: object
+      required: [user_id]
+      properties:
+        user_id:
+          type: string
+          format: uuid
+    Me:
+      type: object
+      required: [user_id, email, status, created_at]
+      properties:
+        user_id:
+          type: string
+          format: uuid
+        email:
+          type: string
+        status:
+          type: string
+          enum: [active, pending_activation, suspended, rejected]
+        created_at:
+          type: string
+          format: date-time
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              enum: [invalid_body, invalid_email, weak_password, email_taken, invalid_credentials, session_required, session_invalid, internal]
+            message:
+              type: string
+  responses:
+    BadRequest:
+      description: Bad Request
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Unauthorized:
+      description: Unauthorized
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Conflict:
+      description: Conflict
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'

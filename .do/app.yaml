@@ -1,0 +1,37 @@
+name: oneklas-identity
+region: tor1
+services:
+  - name: identity
+    github:
+      repo: dev1klas/1klas-identity
+      branch: main
+      deploy_on_push: true
+    source_dir: /
+    dockerfile_path: Dockerfile
+    http_port: 8080
+    instance_count: 1
+    instance_size_slug: basic-xxs
+    health_check:
+      http_path: /healthz
+    envs:
+      - key: POSTGRES_URL
+        scope: RUN_TIME
+        type: SECRET
+      - key: COOKIE_DOMAIN
+        scope: RUN_TIME
+        value: ""
+      - key: COOKIE_SECURE
+        scope: RUN_TIME
+        value: "true"
+      - key: SESSION_TTL_HOURS
+        scope: RUN_TIME
+        value: "168"
+      - key: ARGON2_MEMORY_KIB
+        scope: RUN_TIME
+        value: "65536"
+      - key: ARGON2_TIME
+        scope: RUN_TIME
+        value: "3"
+      - key: ARGON2_PARALLELISM
+        scope: RUN_TIME
+        value: "1"

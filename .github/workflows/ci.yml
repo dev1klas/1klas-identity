@@ -1,0 +1,92 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  go:
+    name: go vet + test + build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+          cache: true
+
+      - name: go mod tidy
+        run: go mod tidy
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go build
+        run: |
+          mkdir -p bin
+          go build -ldflags="-s -w" -o bin/server ./cmd/server
+
+      - name: go test
+        run: go test -race -count=1 ./...
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: v1.61
+          args: --timeout=5m
+        continue-on-error: false
+
+  docker:
+    name: docker build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image
+        run: docker build -t 1klas-identity:ci .
+
+      - name: Image size guard
+        run: |
+          size=$(docker image inspect 1klas-identity:ci --format='{{.Size}}')
+          echo "Image size: $size bytes"
+          if [ "$size" -gt 41943040 ]; then
+            echo "::error::Image > 40 MB; check Dockerfile"
+            exit 1
+          fi
+
+  grep-gates:
+    name: design-discipline grep gates
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: no fmt.Errorf in use case layer
+        run: |
+          matches=$(grep -rn "fmt.Errorf" internal/usecase/ || true)
+          if [ -n "$matches" ]; then
+            echo "::error::fmt.Errorf forbidden in internal/usecase/ (use typed errors)"
+            echo "$matches"
+            exit 1
+          fi
+
+      - name: no fmt.Errorf in config layer
+        run: |
+          matches=$(grep -rn "fmt.Errorf" internal/config/ || true)
+          if [ -n "$matches" ]; then
+            echo "::error::fmt.Errorf forbidden in internal/config/ (use typed errors)"
+            echo "$matches"
+            exit 1
+          fi
+
+      - name: no interface{} in domain
+        run: |
+          matches=$(grep -rn "interface{}" internal/domain/ || true)
+          if [ -n "$matches" ]; then
+            echo "::error::interface{} forbidden in internal/domain/"
+            echo "$matches"
+            exit 1
+          fi

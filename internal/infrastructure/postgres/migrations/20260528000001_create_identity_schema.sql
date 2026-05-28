@@ -1,0 +1,6 @@
+-- +goose Up
+CREATE SCHEMA IF NOT EXISTS identity;
+CREATE EXTENSION IF NOT EXISTS "pgcrypto";
+
+-- +goose Down
+DROP SCHEMA IF EXISTS identity CASCADE;
