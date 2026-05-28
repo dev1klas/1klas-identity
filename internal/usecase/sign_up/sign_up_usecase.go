@@ -177,7 +177,12 @@ func (uc *UseCase) Execute(ctx context.Context, in Input) (Output, error) {
 			TenantID:  in.TenantID,
 			ExpiresAt: expiresAt,
 		}
-		if err := uc.cache.Set(ctx, tokenHashHex, payload, uc.sessionTTL); err != nil {
+		// TTL uses time.Until(expiresAt) so the value is identical to the
+		// SessionAuth re-populate path on a Postgres fallthrough. The
+		// difference vs uc.sessionTTL is bounded by request latency between
+		// session.New(now, expiresAt) and this call — sub-millisecond in
+		// practice — but the values are now consistent across both code paths.
+		if err := uc.cache.Set(ctx, tokenHashHex, payload, time.Until(expiresAt)); err != nil {
 			uc.logger.WarnContext(ctx, "session cache write failed after sign-up",
 				slog.String("session_id", sessionID.String()),
 				slog.String("err", err.Error()),
