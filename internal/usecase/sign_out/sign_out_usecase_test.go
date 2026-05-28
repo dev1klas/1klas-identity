@@ -31,7 +31,12 @@ func TestSignOut_RevokesAndEmits(t *testing.T) {
 
 	// Seed cache so we can confirm the delete fires.
 	tokenHashHex := "deadbeefcafebabe"
-	_ = cache.Set(context.Background(), tokenHashHex, sid.String(), time.Hour)
+	_ = cache.Set(context.Background(), tokenHashHex, session.CachedSession{
+		SessionID: sid,
+		UserID:    uid,
+		TenantID:  tenant.DefaultID,
+		ExpiresAt: clk.T.Add(time.Hour),
+	}, time.Hour)
 
 	uc := sign_out.New(internal_testkit.FakeUoW{}, sessions, out, cache, clk, silent)
 	if _, err := uc.Execute(context.Background(), sign_out.Input{

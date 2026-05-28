@@ -6,12 +6,17 @@ package valkey
 import (
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"errors"
+	"io"
+	"log/slog"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 
 	"github.com/dev1klas/1klas-identity/internal/domain/session"
+	"github.com/dev1klas/1klas-identity/internal/domain/tenant"
 )
 
 // keyPrefix namespaces all keys so we can share a Valkey instance with other
@@ -21,6 +26,7 @@ const keyPrefix = "identity:session:"
 // SessionCache implements session.Cache against a Redis/Valkey client.
 type SessionCache struct {
 	client *redis.Client
+	logger *slog.Logger
 	// opTimeout bounds each per-call deadline. Callers usually pass an
 	// already-scoped ctx, but on the SessionAuth hot path we want a strict
 	// upper bound so a slow cache cannot stall an authenticated request.
@@ -35,6 +41,20 @@ type Config struct {
 	DialTimeout time.Duration
 	// OpTimeout is the per-operation deadline applied on Set/Get/Delete.
 	OpTimeout time.Duration
+	// Logger receives WARN logs for corrupt cache payloads. May be nil — a
+	// no-op discard logger is substituted in New.
+	Logger *slog.Logger
+}
+
+// cachePayload is the wire shape persisted in Valkey. It MUST round-trip
+// losslessly through json.Marshal/Unmarshal. New fields are forwards-
+// compatible (json.Unmarshal silently ignores them) only if their absence is
+// safe; today every field is required.
+type cachePayload struct {
+	SessionID string `json:"session_id"`
+	UserID    string `json:"user_id"`
+	TenantID  string `json:"tenant_id"`
+	ExpiresAt string `json:"expires_at"`
 }
 
 // New constructs a SessionCache. It does NOT perform a connectivity check —
@@ -57,8 +77,13 @@ func New(cfg Config) (*SessionCache, error) {
 		opts.TLSConfig.MinVersion = tls.VersionTLS12
 	}
 	client := redis.NewClient(opts)
+	logger := cfg.Logger
+	if logger == nil {
+		logger = slog.New(slog.NewTextHandler(io.Discard, nil))
+	}
 	return &SessionCache{
 		client:    client,
+		logger:    logger,
 		opTimeout: cfg.OpTimeout,
 	}, nil
 }
@@ -76,35 +101,90 @@ func (c *SessionCache) Ping(ctx context.Context) error {
 // Close releases the underlying pool. Safe to call multiple times.
 func (c *SessionCache) Close() error { return c.client.Close() }
 
-// Set writes the (tokenHash -> sessionID) mapping with the given TTL.
-func (c *SessionCache) Set(ctx context.Context, tokenHash, sessionID string, ttl time.Duration) error {
+// Set writes the full CachedSession payload under the token-hash key with the
+// given TTL.
+func (c *SessionCache) Set(ctx context.Context, tokenHash string, payload session.CachedSession, ttl time.Duration) error {
 	if c.opTimeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, c.opTimeout)
 		defer cancel()
 	}
-	return c.client.Set(ctx, keyPrefix+tokenHash, sessionID, ttl).Err()
+	wire := cachePayload{
+		SessionID: payload.SessionID.String(),
+		UserID:    payload.UserID.String(),
+		TenantID:  payload.TenantID.String(),
+		ExpiresAt: payload.ExpiresAt.UTC().Format(time.RFC3339Nano),
+	}
+	b, err := json.Marshal(wire)
+	if err != nil {
+		// Marshal failure of a fixed schema is a programmer error — surface it.
+		return err
+	}
+	return c.client.Set(ctx, keyPrefix+tokenHash, b, ttl).Err()
 }
 
-// Get retrieves the sessionID for a token hash. Returns session.ErrCacheMiss
-// on a clean miss; any other error indicates a transient infra problem.
-func (c *SessionCache) Get(ctx context.Context, tokenHash string) (string, error) {
+// Get retrieves the CachedSession for a token hash. Returns
+// session.ErrCacheMiss on a clean miss OR on a corrupt payload (corrupt cache
+// entries are treated as a miss; the corruption is logged WARN inside the
+// adapter). Any other Redis error is returned raw so the middleware can log
+// WARN and fall through to Postgres without blocking auth.
+func (c *SessionCache) Get(ctx context.Context, tokenHash string) (session.CachedSession, error) {
 	if c.opTimeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, c.opTimeout)
 		defer cancel()
 	}
-	v, err := c.client.Get(ctx, keyPrefix+tokenHash).Result()
+	b, err := c.client.Get(ctx, keyPrefix+tokenHash).Bytes()
 	if err != nil {
 		if errors.Is(err, redis.Nil) {
-			return "", session.ErrCacheMiss
+			return session.CachedSession{}, session.ErrCacheMiss
 		}
-		return "", err
+		return session.CachedSession{}, err
 	}
-	return v, nil
+	var wire cachePayload
+	if err := json.Unmarshal(b, &wire); err != nil {
+		c.logger.WarnContext(ctx, "session cache: corrupt JSON payload, treating as miss",
+			slog.String("err", err.Error()),
+		)
+		return session.CachedSession{}, session.ErrCacheMiss
+	}
+	sid, err := uuid.Parse(wire.SessionID)
+	if err != nil {
+		c.logger.WarnContext(ctx, "session cache: corrupt session_id, treating as miss",
+			slog.String("err", err.Error()),
+		)
+		return session.CachedSession{}, session.ErrCacheMiss
+	}
+	uid, err := uuid.Parse(wire.UserID)
+	if err != nil {
+		c.logger.WarnContext(ctx, "session cache: corrupt user_id, treating as miss",
+			slog.String("err", err.Error()),
+		)
+		return session.CachedSession{}, session.ErrCacheMiss
+	}
+	tid, err := tenant.Parse(wire.TenantID)
+	if err != nil {
+		c.logger.WarnContext(ctx, "session cache: corrupt tenant_id, treating as miss",
+			slog.String("err", err.Error()),
+		)
+		return session.CachedSession{}, session.ErrCacheMiss
+	}
+	exp, err := time.Parse(time.RFC3339Nano, wire.ExpiresAt)
+	if err != nil {
+		c.logger.WarnContext(ctx, "session cache: corrupt expires_at, treating as miss",
+			slog.String("err", err.Error()),
+		)
+		return session.CachedSession{}, session.ErrCacheMiss
+	}
+	return session.CachedSession{
+		SessionID: sid,
+		UserID:    uid,
+		TenantID:  tid,
+		ExpiresAt: exp.UTC(),
+	}, nil
 }
 
-// Delete removes the (tokenHash -> sessionID) mapping. Idempotent.
+// Delete removes the (tokenHash -> *) mapping. Idempotent.
 func (c *SessionCache) Delete(ctx context.Context, tokenHash string) error {
 	if c.opTimeout > 0 {
 		var cancel context.CancelFunc

@@ -229,11 +229,11 @@ func (r *FakeOutbox) WriteTx(_ context.Context, _ user.Tx, ev outbox.Event) erro
 }
 
 // FakeCache is an in-memory session.Cache. TTL is recorded for assertions
-// but does NOT cause expiry — tests that need expiry must manipulate
-// ExpiredKeys directly or use miniredis.
+// but does NOT cause expiry — tests that need expiry must seed an entry with
+// a past ExpiresAt via Seed/Set or use miniredis.
 type FakeCache struct {
 	mu        sync.Mutex
-	entries   map[string]string
+	entries   map[string]session.CachedSession
 	TTLs      map[string]time.Duration
 	SetCalls  int
 	GetCalls  int
@@ -247,43 +247,43 @@ type FakeCache struct {
 // NewFakeCache constructs a FakeCache.
 func NewFakeCache() *FakeCache {
 	return &FakeCache{
-		entries: map[string]string{},
+		entries: map[string]session.CachedSession{},
 		TTLs:    map[string]time.Duration{},
 	}
 }
 
-// Set records the pair.
-func (c *FakeCache) Set(_ context.Context, tokenHash, sessionID string, ttl time.Duration) error {
+// Set records the payload.
+func (c *FakeCache) Set(_ context.Context, tokenHash string, payload session.CachedSession, ttl time.Duration) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.SetCalls++
 	if c.FailSet {
 		return errors.New("fake cache set failure")
 	}
-	c.entries[tokenHash] = sessionID
+	c.entries[tokenHash] = payload
 	c.TTLs[tokenHash] = ttl
 	return nil
 }
 
-// Get returns the recorded session id or session.ErrCacheMiss.
-func (c *FakeCache) Get(_ context.Context, tokenHash string) (string, error) {
+// Get returns the recorded CachedSession or session.ErrCacheMiss.
+func (c *FakeCache) Get(_ context.Context, tokenHash string) (session.CachedSession, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.GetCalls++
 	if c.FailGet {
-		return "", errors.New("fake cache get failure")
+		return session.CachedSession{}, errors.New("fake cache get failure")
 	}
 	if c.ForceMiss {
-		return "", session.ErrCacheMiss
+		return session.CachedSession{}, session.ErrCacheMiss
 	}
 	v, ok := c.entries[tokenHash]
 	if !ok {
-		return "", session.ErrCacheMiss
+		return session.CachedSession{}, session.ErrCacheMiss
 	}
 	return v, nil
 }
 
-// Delete removes the pair.
+// Delete removes the payload.
 func (c *FakeCache) Delete(_ context.Context, tokenHash string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -302,6 +302,23 @@ func (c *FakeCache) Has(tokenHash string) bool {
 	defer c.mu.Unlock()
 	_, ok := c.entries[tokenHash]
 	return ok
+}
+
+// Seed installs a CachedSession directly (bypassing Set bookkeeping). Useful
+// to prime the cache in middleware tests without inflating SetCalls.
+func (c *FakeCache) Seed(tokenHash string, payload session.CachedSession, ttl time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.entries[tokenHash] = payload
+	c.TTLs[tokenHash] = ttl
+}
+
+// TTL returns the TTL recorded on the last Set/Seed for tokenHash. Zero
+// duration if the key is absent.
+func (c *FakeCache) TTL(tokenHash string) time.Duration {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.TTLs[tokenHash]
 }
 
 // Compile-time guard.

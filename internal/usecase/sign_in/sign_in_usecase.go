@@ -175,7 +175,13 @@ func (uc *UseCase) Execute(ctx context.Context, in Input) (Output, error) {
 	// SessionAuth miss will repopulate via Postgres.
 	if uc.cache != nil {
 		tokenHashHex := hex.EncodeToString(tok.Hash())
-		if err := uc.cache.Set(ctx, tokenHashHex, sessionID.String(), uc.sessionTTL); err != nil {
+		payload := session.CachedSession{
+			SessionID: sessionID,
+			UserID:    u.ID(),
+			TenantID:  in.TenantID,
+			ExpiresAt: expiresAt,
+		}
+		if err := uc.cache.Set(ctx, tokenHashHex, payload, uc.sessionTTL); err != nil {
 			uc.logger.WarnContext(ctx, "session cache write failed after sign-in",
 				slog.String("session_id", sessionID.String()),
 				slog.String("err", err.Error()),

@@ -14,20 +14,22 @@ import (
 	httperr "github.com/dev1klas/1klas-identity/internal/transport/http/errors"
 )
 
-// Session resolves the inbound session cookie to a (user_id, session_id) pair
-// and injects them + tenant_id into the request context.
+// Session resolves the inbound session cookie to a (user_id, session_id,
+// tenant_id) triple and injects them into the request context.
 //
-// Lookup order:
-//  1. Valkey cache (single hash key -> sessionID). On hit we still consult
-//     Postgres to load expiry / user_id / tenant_id authoritatively.
-//  2. Postgres SELECT by token_hash. On hit we re-populate Valkey with the
-//     REMAINING TTL (so a re-populated entry never outlives the session).
-//
-// Cache unavailability is never fatal — a logged WARN and a Postgres
-// fallthrough is the documented policy.
+// Lookup order (per ADR-0008):
+//  1. Valkey cache holds the FULL session payload — sessionID + userID +
+//     tenantID + expiresAt. A cache hit with a non-expired entry serves the
+//     request WITHOUT a Postgres round-trip. This is the hot path.
+//  2. On ErrCacheMiss, or on a cached-but-expired entry, fall through to
+//     Postgres SELECT by token_hash. On hit we re-populate Valkey with the
+//     REMAINING TTL (time.Until(s.ExpiresAt())) so a re-populated entry never
+//     outlives the session row.
+//  3. On any OTHER cache error (transient infra outage), log WARN and fall
+//     through to Postgres — auth is NEVER blocked on cache outage.
 //
 // Returns 401 with the appropriate stable error code if the cookie is
-// missing, malformed, expired, or revoked.
+// missing, malformed, expired (per Postgres), or revoked.
 func Session(repo session.Repository, cache session.Cache, logger *slog.Logger) Middleware {
 	return func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
 		return func(ctx *fasthttp.RequestCtx) {
@@ -40,16 +42,25 @@ func Session(repo session.Repository, cache session.Cache, logger *slog.Logger) 
 			hash := session.HashOf(raw)
 			tokenHashHex := hex.EncodeToString(hash)
 
-			// Cache probe — best effort. On miss / unavailable, fall through
-			// to Postgres. On hit, we still need expiry and user/tenant from
-			// Postgres, so the round-trip pattern is:
-			//   cache.Get -> Postgres SELECT -> validate -> (re)populate cache
-			cacheHit := false
+			// Cache probe — the hot path. A hit on a non-expired entry skips
+			// Postgres entirely (this is the whole point of ADR-0008).
 			if cache != nil {
-				_, err := cache.Get(ctx, tokenHashHex)
+				cached, err := cache.Get(ctx, tokenHashHex)
 				switch {
 				case err == nil:
-					cacheHit = true
+					now := nowFn()
+					if cached.ExpiresAt.After(now) {
+						// True hot path: serve from cache.
+						ctx.SetUserValue(UVUserID, cached.UserID)
+						ctx.SetUserValue(UVSessionID, cached.SessionID)
+						ctx.SetUserValue(UVTenantID, cached.TenantID)
+						ctx.SetUserValue(UVTokenHashHex, tokenHashHex)
+						next(ctx)
+						return
+					}
+					// Cached entry exists but is past its self-reported
+					// expiry — treat as stale and fall through to Postgres,
+					// which is the authoritative source of expiry/revocation.
 				case errors.Is(err, session.ErrCacheMiss):
 					// expected: fall through to Postgres
 				default:
@@ -74,12 +85,18 @@ func Session(repo session.Repository, cache session.Cache, logger *slog.Logger) 
 				return
 			}
 
-			// Re-populate the cache on a miss using the REMAINING TTL —
-			// guarantees the cache entry never outlives the session row.
-			if cache != nil && !cacheHit {
+			// Re-populate the cache using the REMAINING TTL so the cache
+			// entry never outlives the session row.
+			if cache != nil {
 				remaining := time.Until(s.ExpiresAt())
 				if remaining > 0 {
-					if err := cache.Set(ctx, tokenHashHex, s.ID().String(), remaining); err != nil {
+					payload := session.CachedSession{
+						SessionID: s.ID(),
+						UserID:    s.UserID(),
+						TenantID:  s.TenantID(),
+						ExpiresAt: s.ExpiresAt(),
+					}
+					if err := cache.Set(ctx, tokenHashHex, payload, remaining); err != nil {
 						logger.WarnContext(ctx, "session cache repopulate failed",
 							slog.String("err", err.Error()),
 						)
