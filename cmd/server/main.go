@@ -74,7 +74,7 @@ func main() {
 	clk := clock.Real{}
 
 	signUpUC := sign_up.New(uow, userRepo, sessionRepo, outboxRepo, hasher, tokGen, clk, cfg.SessionTTL)
-	signInUC, err := sign_in.New(ctx, uow, userRepo, sessionRepo, outboxRepo, hasher, tokGen, clk, cfg.SessionTTL)
+	signInUC, err := sign_in.New(ctx, uow, userRepo, sessionRepo, outboxRepo, hasher, tokGen, clk, cfg.SessionTTL, logger)
 	if err != nil {
 		logger.Error("sign_in init failed", "error", err.Error())
 		os.Exit(1)

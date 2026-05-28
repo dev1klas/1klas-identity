@@ -3,6 +3,8 @@ package sign_in_test
 import (
 	"context"
 	"errors"
+	"io"
+	"log/slog"
 	"testing"
 	"time"
 
@@ -31,7 +33,8 @@ func buildUC(t *testing.T) (*sign_in.UseCase, *internal_testkit.FakeUsers, *inte
 		t.Fatalf("seed sign-up: %v", err)
 	}
 
-	uc, err := sign_in.New(context.Background(), internal_testkit.FakeUoW{}, users, sessions, out, hasher, tokens, clk, time.Hour)
+	silent := slog.New(slog.NewJSONHandler(io.Discard, nil))
+	uc, err := sign_in.New(context.Background(), internal_testkit.FakeUoW{}, users, sessions, out, hasher, tokens, clk, time.Hour, silent)
 	if err != nil {
 		t.Fatalf("init: %v", err)
 	}

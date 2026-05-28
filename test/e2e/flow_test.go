@@ -81,15 +81,16 @@ func bringUpServer(t *testing.T) (*httptest.Server, func()) {
 	tg := tokens.New()
 	clk := clock.Real{}
 
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil)).With("service", "identity-test")
+
 	signUpUC := sign_up.New(uow, userRepo, sessRepo, outboxRepo, hasher, tg, clk, time.Hour)
-	signInUC, err := sign_in.New(ctx, uow, userRepo, sessRepo, outboxRepo, hasher, tg, clk, time.Hour)
+	signInUC, err := sign_in.New(ctx, uow, userRepo, sessRepo, outboxRepo, hasher, tg, clk, time.Hour, logger)
 	if err != nil {
 		t.Fatalf("sign_in: %v", err)
 	}
 	signOutUC := sign_out.New(uow, sessRepo, outboxRepo, clk)
 	getMeUC := get_me.New(userRepo)
 
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil)).With("service", "identity-test")
 	mux := transport.NewMux(transport.Deps{
 		SignUp:    signUpUC,
 		SignIn:    signInUC,

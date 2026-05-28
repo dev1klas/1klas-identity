@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"time"
 
 	"github.com/google/uuid"
@@ -35,10 +36,15 @@ type UseCase struct {
 	clock      clock.Clock
 	sessionTTL time.Duration
 	dummy      dummyState
+	logger     *slog.Logger
 }
 
 // New constructs the use case. The dummy hash is generated here for timing
 // safety on unknown-email paths.
+//
+// logger is used to surface unexpected dummy-KDF verify failures (which would
+// signal hasher misconfiguration); it MUST be non-nil. Callers in tests can
+// pass slog.New(slog.NewJSONHandler(io.Discard, nil)).
 func New(
 	ctx context.Context,
 	uow domain.UnitOfWork,
@@ -49,6 +55,7 @@ func New(
 	tokens session.TokenGenerator,
 	clk clock.Clock,
 	sessionTTL time.Duration,
+	logger *slog.Logger,
 ) (*UseCase, error) {
 	dh, err := hasher.Hash(ctx, "dummy-password-for-timing-safety-only")
 	if err != nil {
@@ -64,6 +71,7 @@ func New(
 		clock:      clk,
 		sessionTTL: sessionTTL,
 		dummy:      dummyState{hash: dh},
+		logger:     logger,
 	}, nil
 }
 
@@ -75,15 +83,21 @@ func (uc *UseCase) Execute(ctx context.Context, in Input) (Output, error) {
 
 	email, err := user.NewEmail(in.Email)
 	if err != nil {
-		// Still burn an argon verify to keep timing roughly equal.
-		_, _ = uc.hasher.Verify(ctx, uc.dummy.hash, in.Password)
+		// Still burn an argon verify to keep timing roughly equal. The result
+		// is intentionally discarded — only an error here indicates hasher
+		// misconfiguration, which we surface at DEBUG for ops visibility.
+		if _, verr := uc.hasher.Verify(ctx, uc.dummy.hash, in.Password); verr != nil {
+			uc.logger.DebugContext(ctx, "dummy hasher verify failed", "err", verr.Error())
+		}
 		return Output{}, ErrInvalidCredentials
 	}
 
 	u, err := uc.users.FindByEmail(ctx, in.TenantID, email)
 	if err != nil {
 		if errors.Is(err, user.ErrUserNotFound) {
-			_, _ = uc.hasher.Verify(ctx, uc.dummy.hash, in.Password)
+			if _, verr := uc.hasher.Verify(ctx, uc.dummy.hash, in.Password); verr != nil {
+				uc.logger.DebugContext(ctx, "dummy hasher verify failed", "err", verr.Error())
+			}
 			return Output{}, ErrInvalidCredentials
 		}
 		return Output{}, ErrInternal
