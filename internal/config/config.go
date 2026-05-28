@@ -22,7 +22,6 @@ const (
 type Config struct {
 	Addr            string
 	PostgresURL     string
-	CookieDomain    string
 	CookieSecure    bool
 	SessionTTL      time.Duration
 	Argon2MemoryKiB uint32
@@ -54,7 +53,6 @@ func Load() (Config, error) {
 	cfg := Config{
 		Addr:                envOr("ADDR", defaultAddr),
 		PostgresURL:         os.Getenv("POSTGRES_URL"),
-		CookieDomain:        os.Getenv("COOKIE_DOMAIN"),
 		CookieSecure:        envBool("COOKIE_SECURE", true),
 		SessionTTL:          time.Duration(defaultSessionTTLHrs) * time.Hour,
 		Argon2MemoryKiB:     defaultArgon2MemoryKi,
