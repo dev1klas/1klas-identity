@@ -12,6 +12,8 @@ jobs:
     with:
       go-version: '1.22'
       paths: 'internal/transport/ cmd/'
+      # Repo's .golangci.yml uses the v2 config schema.
+      golangci-version: 'v2.0.2'
 
   no-claude-md:
     uses: dev1klas/1klas-ci/.github/workflows/no-claude-md.yml@main
