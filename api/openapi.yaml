@@ -3,13 +3,31 @@ info:
   title: 1klas Identity API
   version: 0.1.0
   description: |
-    Walking-skeleton identity service. Sign-up, sign-in, sign-out, profile/me.
+    Walking-skeleton identity service for the 1klas platform. Provides email +
+    password sign-up / sign-in / sign-out and a session-cookie-protected
+    profile endpoint. Authoritative contract; see SPEC-identity.md for
+    behavioural details and the typed-error mapper in
+    internal/transport/http/errors for the error envelope.
 servers:
   - url: https://api.1klasdev.com
+    description: Staging (DigitalOcean App Platform)
+  - url: http://localhost:8080
+    description: Local development
+tags:
+  - name: identity-public
+    description: Public-zone identity endpoints consumed by the cabinet.
+  - name: infra
+    description: Operator-facing infrastructure endpoints (health, OpenAPI).
 paths:
   /api/v1/crm/public/identity/sign-up:
     post:
+      tags: [identity-public]
       summary: Create a new user account and start a session.
+      description: |
+        Creates a user with the given email + password, issues a session, and
+        sets the session cookie. Origin (or Referer) header check enforced
+        as the walking-skeleton CSRF mitigation.
+      operationId: signUp
       requestBody:
         required: true
         content:
@@ -21,19 +39,30 @@ paths:
           description: Created
           headers:
             Set-Cookie:
+              description: Session cookie. `__Host-session` in production (Secure, SameSite=Lax, Path=/), `session` in dev.
               schema:
                 type: string
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/UserRef'
+                $ref: '#/components/schemas/SessionResponse'
         '400':
           $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '409':
           $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/Internal'
   /api/v1/crm/public/identity/sessions:
     post:
-      summary: Sign in with email + password; sets a session cookie.
+      tags: [identity-public]
+      summary: Sign in with email + password.
+      description: |
+        Verifies credentials and sets the session cookie. Email-existence
+        leaks are suppressed: invalid-email-format errors collapse into
+        401 invalid_credentials.
+      operationId: signIn
       requestBody:
         required: true
         content:
@@ -45,94 +74,163 @@ paths:
           description: OK
           headers:
             Set-Cookie:
+              description: Session cookie. `__Host-session` in production (Secure, SameSite=Lax, Path=/), `session` in dev.
               schema:
                 type: string
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/UserRef'
+                $ref: '#/components/schemas/SessionResponse'
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/Internal'
   /api/v1/crm/public/identity/sessions/current:
     delete:
+      tags: [identity-public]
       summary: Sign out the current session.
+      description: |
+        Revokes the current session and clears the session cookie. Idempotent
+        at the domain layer (already-revoked sessions still return 204).
+      operationId: signOut
       security:
-        - sessionCookie: []
+        - cookieAuth: []
       responses:
         '204':
           description: No Content
+          headers:
+            Set-Cookie:
+              description: Cleared session cookie (`Max-Age=0`).
+              schema:
+                type: string
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/Internal'
   /api/v1/crm/public/identity/profile/me:
     get:
+      tags: [identity-public]
       summary: Return the authenticated user's profile.
+      operationId: getMe
       security:
-        - sessionCookie: []
+        - cookieAuth: []
       responses:
         '200':
           description: OK
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Me'
+                $ref: '#/components/schemas/MeResponse'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/Internal'
   /healthz:
     get:
+      tags: [infra]
       summary: Liveness probe.
+      operationId: healthz
       responses:
         '200':
           description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
   /openapi.json:
     get:
+      tags: [infra]
       summary: Serve this OpenAPI document.
+      operationId: openapi
       responses:
         '200':
           description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                description: This OpenAPI 3.0 document.
 components:
   securitySchemes:
-    sessionCookie:
+    cookieAuth:
       type: apiKey
       in: cookie
       name: __Host-session
+      description: |
+        Session cookie issued by sign-up / sign-in. Name is `__Host-session`
+        in production (HTTPS, Secure, Path=/) and `session` in local dev
+        (plain HTTP). Cabinet must `credentials: 'include'` on every request.
   schemas:
+    UserID:
+      type: string
+      format: uuid
+      description: Stable opaque user identifier.
+      example: 6f9619ff-8b86-d011-b42d-00cf4fc964ff
+    Email:
+      type: string
+      format: email
+      maxLength: 320
+      description: RFC-5321 compliant email address.
+    Password:
+      type: string
+      minLength: 12
+      maxLength: 256
+      description: |
+        Raw password. Length floor matches domain policy
+        (internal/domain/user/password_hash.go).
+      writeOnly: true
     CredentialsRequest:
       type: object
       required: [email, password]
       properties:
         email:
-          type: string
-          format: email
+          $ref: '#/components/schemas/Email'
         password:
-          type: string
-          minLength: 12
-          maxLength: 256
-    UserRef:
+          $ref: '#/components/schemas/Password'
+      additionalProperties: false
+    SessionResponse:
       type: object
       required: [user_id]
+      description: Returned by sign-up and sign-in. Session token is delivered via Set-Cookie, never in the body.
       properties:
         user_id:
-          type: string
-          format: uuid
-    Me:
+          $ref: '#/components/schemas/UserID'
+      additionalProperties: false
+    MeResponse:
       type: object
       required: [user_id, email, status, created_at]
       properties:
         user_id:
-          type: string
-          format: uuid
+          $ref: '#/components/schemas/UserID'
         email:
-          type: string
+          $ref: '#/components/schemas/Email'
         status:
           type: string
           enum: [active, pending_activation, suspended, rejected]
+          description: User lifecycle status.
         created_at:
           type: string
           format: date-time
+      additionalProperties: false
+    HealthResponse:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [ok]
+      additionalProperties: false
     Error:
       type: object
+      description: |
+        Wire shape returned by the typed-error mapper
+        (internal/transport/http/errors/mapper.go) for every 4xx and 5xx.
       required: [error]
       properties:
         error:
@@ -141,24 +239,63 @@ components:
           properties:
             code:
               type: string
-              enum: [invalid_body, invalid_email, weak_password, email_taken, invalid_credentials, session_required, session_invalid, internal]
+              enum:
+                - invalid_body
+                - invalid_email
+                - weak_password
+                - email_taken
+                - invalid_credentials
+                - session_required
+                - session_invalid
+                - forbidden
+                - not_found
+                - internal
+              description: Stable machine-readable error code. The cabinet keys translations off this value.
             message:
               type: string
+              description: Human-readable English message. Not localised.
+          additionalProperties: false
+      additionalProperties: false
   responses:
     BadRequest:
-      description: Bad Request
+      description: |
+        Bad Request. Possible codes: `invalid_body`, `invalid_email`,
+        `weak_password`.
       content:
         application/json:
           schema:
             $ref: '#/components/schemas/Error'
     Unauthorized:
-      description: Unauthorized
+      description: |
+        Unauthorized. Possible codes: `invalid_credentials` (sign-in only),
+        `session_required` (missing cookie), `session_invalid` (expired /
+        revoked / unknown).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Forbidden:
+      description: |
+        Forbidden. Code: `forbidden`. Returned by the Origin/Referer check
+        on mutating routes when the request does not originate from an
+        allow-listed origin (walking-skeleton CSRF mitigation per
+        SPEC-identity §48-49).
       content:
         application/json:
           schema:
             $ref: '#/components/schemas/Error'
     Conflict:
-      description: Conflict
+      description: |
+        Conflict. Code: `email_taken`. The (tenant, email) pair already
+        exists.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Internal:
+      description: |
+        Internal Server Error. Code: `internal`. Generic catch-all for
+        un-mapped infra failures.
       content:
         application/json:
           schema:
